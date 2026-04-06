@@ -2,19 +2,31 @@
 Business logic: wraps the HuggingFace zero-shot classification pipeline
 and handles DB persistence via asyncpg.
 """
+import json
 import os
 import asyncio
 import asyncpg
 import logging
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.getenv("MODEL_NAME", "facebook/bart-large-mnli")
 MODEL_VERSION = os.getenv("MODEL_VERSION", "1.0.0")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/medicaldb")
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    pg_user = os.getenv("POSTGRES_USER", "postgres")
+    pg_password = os.getenv("POSTGRES_PASSWORD", "")
+    pg_host = os.getenv("POSTGRES_HOST", "localhost")
+    pg_port = os.getenv("POSTGRES_PORT", "5432")
+    pg_db = os.getenv("POSTGRES_DB", "medicaldb")
+    if not pg_password:
+        raise RuntimeError(
+            "Either DATABASE_URL or POSTGRES_PASSWORD environment variable must be set."
+        )
+    DATABASE_URL = f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}"
 
 # Medical condition labels for zero-shot classification
 CONDITION_LABELS = [
@@ -79,26 +91,15 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
     """Run zero-shot classification and persist result."""
     clf = get_classifier()
     if clf is None:
-        # Graceful degradation — return mock result so service stays up
-        import random
-        label = random.choice(CONDITION_LABELS)
-        scores = {l: round(random.uniform(0.01, 0.15), 4) for l in CONDITION_LABELS}
-        scores[label] = round(random.uniform(0.40, 0.75), 4)
-        all_preds = sorted(
-            [{"label": k, "score": v} for k, v in scores.items()],
-            key=lambda x: x["score"], reverse=True
-        )
-        top_condition, confidence = all_preds[0]["label"], all_preds[0]["score"]
-        model_ver = f"{MODEL_VERSION}-mock"
-    else:
-        result = clf(symptoms, CONDITION_LABELS, multi_label=False)
-        all_preds = [{"label": l, "score": round(s, 4)} for l, s in zip(result["labels"], result["scores"])]
-        top_condition = all_preds[0]["label"]
-        confidence = all_preds[0]["score"]
-        model_ver = MODEL_VERSION
+        raise RuntimeError(f"Model '{MODEL_NAME}' is unavailable. Check logs for load errors.")
+
+    result = clf(symptoms, CONDITION_LABELS, multi_label=False)
+    all_preds = [{"label": l, "score": round(s, 4)} for l, s in zip(result["labels"], result["scores"])]
+    top_condition = all_preds[0]["label"]
+    confidence = all_preds[0]["score"]
+    model_ver = MODEL_VERSION
 
     pool = await get_db_pool()
-    import json
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -127,7 +128,6 @@ async def get_prediction_by_id(record_id: int) -> dict | None:
         row = await conn.fetchrow("SELECT * FROM predictions WHERE id = $1", record_id)
     if row is None:
         return None
-    import json
     return {
         "record_id": row["id"],
         "patient_id": row["patient_id"],

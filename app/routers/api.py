@@ -5,14 +5,6 @@ from app.services import core
 router = APIRouter()
 
 
-@router.on_event("startup")
-async def startup():
-    await core.init_db()
-    # Warm up model in background
-    import asyncio
-    asyncio.get_event_loop().run_in_executor(None, core.get_classifier)
-
-
 # ──────────────────────────────────────────────
 # Endpoint 1 — POST /predict
 # ──────────────────────────────────────────────
@@ -33,13 +25,17 @@ async def predict(payload: SymptomRequest):
     **Required fields:** `patient_id`, `symptoms`
 
     Raises **422** if `symptoms` is blank, too short/long, or `age` is out of range.
+    Raises **503** if the model failed to load.
     """
-    result = await core.classify_symptoms(
-        patient_id=payload.patient_id,
-        symptoms=payload.symptoms,
-        age=payload.age,
-        notes=payload.notes,
-    )
+    try:
+        result = await core.classify_symptoms(
+            patient_id=payload.patient_id,
+            symptoms=payload.symptoms,
+            age=payload.age,
+            notes=payload.notes,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     return result
 
 
@@ -77,6 +73,6 @@ async def health():
     return {
         "status": "ok" if db_ok else "degraded",
         "db": "healthy" if db_ok else "unreachable",
-        "model": "loaded" if clf_ok else "mock-mode",
+        "model": "loaded" if clf_ok else "unavailable",
         "version": core.MODEL_VERSION,
     }

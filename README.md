@@ -25,6 +25,10 @@ GET  /health    →  check DB + model status  →  return JSON
 git clone https://github.com/YOUR_USERNAME/medical-ai-service-challenge1-weaction.git
 cd medical-ai-service-challenge1-weaction
 
+# Supply required secrets (POSTGRES_PASSWORD is mandatory — no default)
+cp .env.example .env
+# Edit .env and set POSTGRES_PASSWORD to a strong value before continuing
+
 # Build and start both services (api + db)
 # Note: first build takes ~5–10 min — downloads facebook/bart-large-mnli (~1.6 GB) into the image
 docker compose -f docker/docker-compose.yml up --build
@@ -89,13 +93,22 @@ Full interactive docs: **`http://localhost:8000/docs`**
 
 ## 🌍 Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://postgres:postgres@db:5432/medicaldb` | Full Postgres connection string |
-| `MODEL_NAME` | `facebook/bart-large-mnli` | HuggingFace model ID |
-| `MODEL_VERSION` | `1.0.0` | Displayed in predictions |
-| `POSTGRES_PASSWORD` | `postgres` | DB password |
-| `POSTGRES_DB` | `medicaldb` | DB name |
+Copy `.env.example` to `.env` and fill in the required values before running.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `POSTGRES_PASSWORD` | **yes** | — | Password for the PostgreSQL `postgres` user |
+| `POSTGRES_DB` | no | `medicaldb` | PostgreSQL database name |
+| `POSTGRES_USER` | no | `postgres` | PostgreSQL user |
+| `POSTGRES_HOST` | no | `db` | PostgreSQL hostname (set to `db` by Compose for the internal network) |
+| `POSTGRES_PORT` | no | `5432` | PostgreSQL port |
+| `DATABASE_URL` | no | *(built from above)* | Full Postgres connection string; overrides the individual `POSTGRES_*` vars when set |
+| `MODEL_NAME` | no | `facebook/bart-large-mnli` | HuggingFace model ID |
+| `MODEL_VERSION` | no | `1.0.0` | Version string surfaced in prediction responses |
+
+> The service **refuses to start** if neither `DATABASE_URL` nor `POSTGRES_PASSWORD` is set.
+>
+> `DATABASE_URL` is built automatically at runtime from the `POSTGRES_*` vars — you do not need to set it manually when using Docker Compose.
 
 ---
 
@@ -104,10 +117,11 @@ Full interactive docs: **`http://localhost:8000/docs`**
 See **`docs/AVOIDANCE_TABLE.md`** and **`docs/RUNBOOK.md`** for full details. Quick summary:
 
 1. `python:3.11-slim` + multi-stage build (small image)
-2. No hardcoded secrets — all via `os.getenv()`
+2. No hardcoded secrets — all via `os.getenv()`; secrets loaded through `env_file` in Compose
 3. Pydantic v2 validation with 422 on bad input
 4. Router/service/schema separation (no monolith)
 5. DB healthcheck before API starts
 6. Non-root container user
 7. Dockerfile `HEALTHCHECK` directive
-8. Model weights pre-downloaded at build time (no runtime internet dependency); graceful mock-mode fallback if load still fails
+8. Model weights pre-downloaded at build time (no runtime internet dependency); explicit 503 error if load still fails instead of returning dangerous mock data
+9. `env_file` instead of `${SECRET}` interpolation — avoids Docker Compose v2 project-directory `.env` lookup pitfall when using `-f`

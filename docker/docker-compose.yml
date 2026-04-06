@@ -7,10 +7,12 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: medical_api
+    env_file:
+      - ../.env
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-medicaldb}
+      POSTGRES_HOST: db
       MODEL_NAME: ${MODEL_NAME:-facebook/bart-large-mnli}
       MODEL_VERSION: ${MODEL_VERSION:-1.0.0}
     depends_on:
@@ -30,19 +32,18 @@ services:
   db:
     image: postgres:16-alpine
     container_name: medical_db
+    env_file:
+      - ../.env
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-medicaldb}
-    ports:
-      - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
       - medical_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d medicaldb"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-medicaldb}"]
       interval: 10s
       timeout: 5s
       retries: 5
