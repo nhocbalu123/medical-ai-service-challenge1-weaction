@@ -104,6 +104,8 @@ CREATE TABLE predictions (
     confidence    FLOAT,
     all_predictions JSONB,
     model_version VARCHAR(32),
+    age           SMALLINT,
+    notes         TEXT,
     created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 ```

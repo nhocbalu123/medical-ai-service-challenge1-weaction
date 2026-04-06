@@ -54,3 +54,27 @@ def get_classifier():
 **Fix (app):** Removed `DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/...` from the `api` environment block. `app/services/core.py` now builds `DATABASE_URL` at runtime from the individual `POSTGRES_*` parts (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`) when `DATABASE_URL` is not explicitly provided, eliminating compose-time secret interpolation entirely.
 
 **Principle:** Avoid `${SECRET}` compose interpolation for sensitive values. Prefer `env_file` so secrets are injected at container runtime, not evaluated at compose parse time.
+
+---
+
+## Mistake 3 — Blocking the event loop with CPU-bound ML tasks
+
+**Problem:** Calling the HuggingFace `pipeline` object synchronously inside an `async def` function blocks the entire FastAPI event loop. Under load, this causes the API to hang and prevents it from handling other requests (like `/health`) while inference is running.
+
+**Fix:** Offloaded the `clf(...)` call to a thread pool using `asyncio.get_running_loop().run_in_executor(None, ...)`. This allows the event loop to continue processing other requests while the CPU-heavy classification runs in the background.
+
+---
+
+## Mistake 4 — Silent data loss (dropping request fields)
+
+**Problem:** The API accepted `age` and `notes` in the request schema, but the service layer didn't store them in PostgreSQL because the columns were missing from the DDL and the INSERT query.
+
+**Fix:** Updated the database schema to include `age` and `notes` columns and modified the persistence logic to include these fields in the `INSERT` statement. Added an `ALTER TABLE` migration guard to ensure existing databases are updated without manual intervention.
+
+---
+
+## Mistake 5 — Resource leaks on shutdown
+
+**Problem:** The `asyncpg` connection pool was initialized on startup but never explicitly closed when the service stopped, leading to hanging connections in PostgreSQL.
+
+**Fix:** Added an explicit `await core.close_db_pool()` call to the FastAPI `lifespan` shutdown phase (after the `yield` statement) to gracefully drain and close all database connections.

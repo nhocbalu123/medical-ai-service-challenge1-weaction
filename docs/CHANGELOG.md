@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Awaited model warm-up in lifespan.** The service now waits for the HuggingFace model to finish loading into memory before it starts accepting HTTP requests. This prevents early requests from hitting a `503 Service Unavailable` error during the first few seconds of startup.
+- **Offloaded inference to thread pool.** Synchronous HuggingFace `pipeline` calls are now executed in a separate thread pool using `run_in_executor`. This prevents the CPU-heavy classification logic from blocking the FastAPI/asyncio event loop, ensuring the API remains responsive under load.
+- **Persisted `age` and `notes` in database.** Added missing `age` and `notes` columns to the `predictions` table and updated the INSERT query to store these fields. Added an `ALTER TABLE` migration guard to `init_db` to automatically update existing databases.
+- **Added graceful shutdown for DB pool.** The `asyncpg` connection pool is now explicitly closed during the FastAPI lifespan shutdown phase, preventing hanging connections and ensuring a clean service exit.
+
 ### Changed
 
 - **Removed dangerous mock-mode fallback.** If the HuggingFace model fails to load, the service no longer returns fake random predictions. Instead, `POST /predict` now explicitly returns a `503 Service Unavailable` error, and `GET /health` reports `"model": "unavailable"`.

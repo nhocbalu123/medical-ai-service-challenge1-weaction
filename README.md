@@ -114,14 +114,4 @@ Copy `.env.example` to `.env` and fill in the required values before running.
 
 ## ✅ Common Mistakes Avoided
 
-See **`docs/AVOIDANCE_TABLE.md`** and **`docs/RUNBOOK.md`** for full details. Quick summary:
-
-1. `python:3.11-slim` + multi-stage build (small image)
-2. No hardcoded secrets — all via `os.getenv()`; secrets loaded through `env_file` in Compose
-3. Pydantic v2 validation with 422 on bad input
-4. Router/service/schema separation (no monolith)
-5. DB healthcheck before API starts
-6. Non-root container user
-7. Dockerfile `HEALTHCHECK` directive
-8. Model weights pre-downloaded at build time (no runtime internet dependency); explicit 503 error if load still fails instead of returning dangerous mock data
-9. `env_file` instead of `${SECRET}` interpolation — avoids Docker Compose v2 project-directory `.env` lookup pitfall when using `-f`
+See **`docs/AVOIDANCE_TABLE.md`** and **`docs/RUNBOOK.md`** for full details.
