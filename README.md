@@ -26,6 +26,7 @@ git clone https://github.com/YOUR_USERNAME/medical-ai-service-challenge1-weactio
 cd medical-ai-service-challenge1-weaction
 
 # Build and start both services (api + db)
+# Note: first build takes ~5–10 min — downloads facebook/bart-large-mnli (~1.6 GB) into the image
 docker compose -f docker/docker-compose.yml up --build
 
 # Check both containers are healthy
@@ -63,11 +64,12 @@ medical-ai-service/
 ├── docker/
 │   ├── Dockerfile          # Multi-stage build (python:3.11-slim)
 │   └── docker-compose.yml  # api + db, healthchecks, env vars
+├── docs/
+│   ├── RUNBOOK.md          # Detailed ops guide + troubleshooting
+│   └── AVOIDANCE_TABLE.md  # Real issue: classifier randomness + solution
 ├── utils/                  # Screenshots as proof of working service
-├── docs/RUNBOOK.md         # Detailed ops guide + mistake avoidance log
 ├── requirements.txt
 ├── .dockerignore
-├── AVOIDANCE_TABLE.md      # Proof of avoiding ≥ 6/8 common mistakes
 └── README.md
 ```
 
@@ -99,7 +101,7 @@ Full interactive docs: **`http://localhost:8000/docs`**
 
 ## ✅ Common Mistakes Avoided
 
-See **`AVOIDANCE_TABLE.md`** and **`docs/RUNBOOK.md`** for full details. Quick summary:
+See **`docs/AVOIDANCE_TABLE.md`** and **`docs/RUNBOOK.md`** for full details. Quick summary:
 
 1. `python:3.11-slim` + multi-stage build (small image)
 2. No hardcoded secrets — all via `os.getenv()`
@@ -108,4 +110,4 @@ See **`AVOIDANCE_TABLE.md`** and **`docs/RUNBOOK.md`** for full details. Quick s
 5. DB healthcheck before API starts
 6. Non-root container user
 7. Dockerfile `HEALTHCHECK` directive
-8. Graceful degradation when model fails to load (mock mode)
+8. Model weights pre-downloaded at build time (no runtime internet dependency); graceful mock-mode fallback if load still fails
