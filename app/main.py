@@ -11,8 +11,9 @@ from app.services import core
 async def lifespan(app: FastAPI):
     await core.init_db()
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, core.get_classifier)
+    await loop.run_in_executor(None, core.get_classifier)
     yield
+    await core.close_db_pool()
 
 
 app = FastAPI(

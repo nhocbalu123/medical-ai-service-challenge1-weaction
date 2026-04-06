@@ -81,8 +81,16 @@ async def init_db():
                 confidence  FLOAT,
                 all_predictions JSONB,
                 model_version VARCHAR(32),
+                age         SMALLINT,
+                notes       TEXT,
                 created_at  TIMESTAMPTZ DEFAULT NOW()
             )
+        """)
+        # Migration guard: add columns to pre-existing tables that lack them.
+        await conn.execute("""
+            ALTER TABLE predictions
+                ADD COLUMN IF NOT EXISTS age   SMALLINT,
+                ADD COLUMN IF NOT EXISTS notes TEXT
         """)
     logger.info("DB initialized")
 
@@ -93,7 +101,10 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
     if clf is None:
         raise RuntimeError(f"Model '{MODEL_NAME}' is unavailable. Check logs for load errors.")
 
-    result = clf(symptoms, CONDITION_LABELS, multi_label=False)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, lambda: clf(symptoms, CONDITION_LABELS, multi_label=False)
+    )
     all_preds = [{"label": l, "score": round(s, 4)} for l, s in zip(result["labels"], result["scores"])]
     top_condition = all_preds[0]["label"]
     confidence = all_preds[0]["score"]
@@ -103,11 +114,12 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO predictions (patient_id, symptoms, top_condition, confidence, all_predictions, model_version)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+            INSERT INTO predictions
+                (patient_id, symptoms, top_condition, confidence, all_predictions, model_version, age, notes)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
             RETURNING id, created_at
             """,
-            patient_id, symptoms, top_condition, confidence, json.dumps(all_preds), model_ver
+            patient_id, symptoms, top_condition, confidence, json.dumps(all_preds), model_ver, age, notes
         )
 
     return {
@@ -138,6 +150,14 @@ async def get_prediction_by_id(record_id: int) -> dict | None:
         "model_version": row["model_version"],
         "created_at": row["created_at"],
     }
+
+
+async def close_db_pool():
+    global _db_pool
+    if _db_pool is not None:
+        await _db_pool.close()
+        _db_pool = None
+        logger.info("DB pool closed")
 
 
 async def check_db_health() -> bool:
