@@ -171,3 +171,132 @@ def test_get_prediction_returns_404_when_missing(client: TestClient):
 
     assert response.status_code == 404
     assert "9999" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Fallback behaviour (5.0.7)
+# ---------------------------------------------------------------------------
+
+FALLBACK_PREDICTION = {
+    **MOCK_PREDICTION,
+    "top_condition": "unclassifiable",
+    "confidence": 0.0,
+    "all_predictions": [],
+    "is_fallback": True,
+    "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ",
+}
+
+
+def test_predict_returns_201_not_503_when_model_unavailable(client: TestClient):
+    """When classify_symptoms returns a fallback dict the API must still return 201."""
+    with patch("app.services.core.classify_symptoms", new_callable=AsyncMock, return_value=FALLBACK_PREDICTION):
+        response = client.post(
+            "/predict",
+            json={
+                "patient_id": "P-001",
+                "symptoms": "Patient reports persistent headache and fever for 3 days",
+            },
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["is_fallback"] is True
+    assert body["top_condition"] == "unclassifiable"
+    assert body["confidence"] == 0.0
+    assert body["all_predictions"] == []
+    assert "fallback_message" in body
+
+
+def test_predict_fallback_contains_advisory_message(client: TestClient):
+    """The fallback_message field must be present and non-empty."""
+    with patch("app.services.core.classify_symptoms", new_callable=AsyncMock, return_value=FALLBACK_PREDICTION):
+        response = client.post(
+            "/predict",
+            json={
+                "patient_id": "P-003",
+                "symptoms": "Patient reports persistent headache and fever for 3 days",
+            },
+        )
+
+    body = response.json()
+    assert body.get("fallback_message"), "fallback_message must be present and non-empty"
+
+
+def test_predict_normal_result_has_no_fallback_flag(client: TestClient):
+    """A successful classification must return is_fallback=False."""
+    with patch("app.services.core.classify_symptoms", new_callable=AsyncMock, return_value={
+        **MOCK_PREDICTION,
+        "is_fallback": False,
+        "fallback_message": None,
+    }):
+        response = client.post(
+            "/predict",
+            json={
+                "patient_id": "P-001",
+                "symptoms": "Patient reports persistent headache, fever of 38.5°C, and stiff neck for 3 days",
+            },
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["is_fallback"] is False
+    assert body.get("fallback_message") is None
+
+
+def test_classify_symptoms_returns_fallback_when_model_none():
+    """Unit test: classify_symptoms returns is_fallback=True when classifier is None."""
+    import asyncio
+    from app.services import core
+
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_conn.fetchrow = AsyncMock(return_value={"id": 99, "created_at": datetime.now(timezone.utc)})
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    async def _run():
+        with (
+            patch("app.services.core.get_classifier", return_value=None),
+            patch("app.services.core.get_db_pool", new_callable=AsyncMock, return_value=mock_pool),
+        ):
+            return await core.classify_symptoms(
+                "P-unit", "Patient has persistent headache and high fever for 3 days", None, None
+            )
+
+    result = asyncio.run(_run())
+
+    assert result["is_fallback"] is True
+    assert result["top_condition"] == "unclassifiable"
+    assert result["confidence"] == 0.0
+    assert result["all_predictions"] == []
+    assert result["fallback_message"] == core.FALLBACK_MESSAGE
+
+
+def test_classify_symptoms_returns_fallback_when_inference_fails():
+    """Unit test: classify_symptoms returns is_fallback=True when inference raises after retries."""
+    import asyncio
+    from app.services import core
+
+    mock_clf = MagicMock(side_effect=RuntimeError("GPU OOM"))
+
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_conn.fetchrow = AsyncMock(return_value={"id": 100, "created_at": datetime.now(timezone.utc)})
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    async def _run():
+        with (
+            patch("app.services.core.get_classifier", return_value=mock_clf),
+            patch("app.services.core._run_inference", side_effect=RuntimeError("GPU OOM")),
+            patch("app.services.core.get_db_pool", new_callable=AsyncMock, return_value=mock_pool),
+        ):
+            return await core.classify_symptoms(
+                "P-unit", "Patient has persistent headache and high fever for 3 days", None, None
+            )
+
+    result = asyncio.run(_run())
+
+    assert result["is_fallback"] is True
+    assert result["top_condition"] == "unclassifiable"
+    assert result["fallback_message"] == core.FALLBACK_MESSAGE

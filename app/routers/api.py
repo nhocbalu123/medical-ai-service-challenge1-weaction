@@ -25,17 +25,15 @@ async def predict(payload: SymptomRequest):
     **Required fields:** `patient_id`, `symptoms`
 
     Raises **422** if `symptoms` is blank, too short/long, or `age` is out of range.
-    Raises **503** if the model failed to load.
+    Returns **201** even when the model is unavailable; check ``is_fallback`` in the
+    response body and advise the patient to consult a doctor when it is ``true``.
     """
-    try:
-        result = await core.classify_symptoms(
-            patient_id=payload.patient_id,
-            symptoms=payload.symptoms,
-            age=payload.age,
-            notes=payload.notes,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    result = await core.classify_symptoms(
+        patient_id=payload.patient_id,
+        symptoms=payload.symptoms,
+        age=payload.age,
+        notes=payload.notes,
+    )
     return result
 
 

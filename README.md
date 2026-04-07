@@ -10,7 +10,8 @@ A production-ready **FastAPI** microservice that wraps a HuggingFace zero-shot c
 ## 📐 Architecture
 
 ```
-POST /predict   →  Pydantic validation  →  HF zero-shot classifier  →  save to Postgres  →  return JSON
+POST /predict   →  Pydantic validation  →  HF zero-shot classifier (retry ×3)  →  save to Postgres  →  return JSON
+                                         └─ fallback if model unavailable ──────┘  (is_fallback=true)
 GET  /predict/{id}  →  fetch from Postgres  →  return JSON
 GET  /health    →  check DB + model status  →  return JSON
 ```
@@ -83,9 +84,25 @@ medical-ai-service/
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/predict` | Submit symptoms → get AI prediction + saved to DB |
+| `POST` | `/predict` | Submit symptoms → get AI prediction + saved to DB. Always returns `201`; check `is_fallback` when the model is unavailable. |
 | `GET`  | `/predict/{id}` | Retrieve a saved prediction by record ID |
 | `GET`  | `/health` | Live status of API, DB, and model |
+
+### Fallback behaviour
+
+If the HuggingFace model fails to load **or** inference fails after 3 retry attempts, `POST /predict` still returns `201 Created` — it never returns `503`. The response body includes:
+
+```json
+{
+  "is_fallback": true,
+  "top_condition": "unclassifiable",
+  "confidence": 0.0,
+  "all_predictions": [],
+  "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
+}
+```
+
+Callers should check `is_fallback` and display the `fallback_message` to the user. All fallback records are persisted to the database with `is_fallback = TRUE` for audit purposes.
 
 Full interactive docs: **`http://localhost:8000/docs`**
 

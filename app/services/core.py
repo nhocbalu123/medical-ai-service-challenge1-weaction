@@ -10,6 +10,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
+
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.getenv("MODEL_NAME", "facebook/bart-large-mnli")
@@ -44,6 +46,19 @@ CONDITION_LABELS = [
 
 _classifier = None
 _db_pool: Optional[asyncpg.Pool] = None
+
+FALLBACK_MESSAGE = "Không thể phân loại, vui lòng tham khảo bác sĩ"
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+def _run_inference(clf, symptoms: str) -> dict:
+    """Synchronous inference call; tenacity retries up to 3 times with exponential backoff."""
+    return clf(symptoms, CONDITION_LABELS, multi_label=False)
 
 
 def get_classifier():
@@ -89,49 +104,74 @@ async def init_db():
         # Migration guard: add columns to pre-existing tables that lack them.
         await conn.execute("""
             ALTER TABLE predictions
-                ADD COLUMN IF NOT EXISTS age   SMALLINT,
-                ADD COLUMN IF NOT EXISTS notes TEXT
+                ADD COLUMN IF NOT EXISTS age         SMALLINT,
+                ADD COLUMN IF NOT EXISTS notes       TEXT,
+                ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN DEFAULT FALSE
         """)
     logger.info("DB initialized")
 
 
 async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, notes: str | None) -> dict:
-    """Run zero-shot classification and persist result."""
-    clf = get_classifier()
-    if clf is None:
-        raise RuntimeError(f"Model '{MODEL_NAME}' is unavailable. Check logs for load errors.")
+    """Run zero-shot classification and persist result.
 
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, lambda: clf(symptoms, CONDITION_LABELS, multi_label=False)
-    )
-    all_preds = [{"label": l, "score": round(s, 4)} for l, s in zip(result["labels"], result["scores"])]
-    top_condition = all_preds[0]["label"]
-    confidence = all_preds[0]["score"]
-    model_ver = MODEL_VERSION
+    Never raises — if the model is unavailable or all retries fail the response
+    includes ``is_fallback=True`` and a human-readable ``fallback_message``.
+    The fallback record is still persisted to the database for audit purposes.
+    """
+    clf = get_classifier()
+    is_fallback = False
+
+    if clf is None:
+        logger.warning("Classifier unavailable — returning fallback response")
+        is_fallback = True
+    else:
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: _run_inference(clf, symptoms))
+        except Exception as exc:
+            logger.error("Inference failed after all retries: %s", exc)
+            is_fallback = True
+
+    if is_fallback:
+        top_condition = "unclassifiable"
+        confidence = 0.0
+        all_preds: list[dict] = []
+    else:
+        all_preds = [
+            {"label": lbl, "score": round(score, 4)}
+            for lbl, score in zip(result["labels"], result["scores"])
+        ]
+        top_condition = all_preds[0]["label"]
+        confidence = all_preds[0]["score"]
 
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO predictions
-                (patient_id, symptoms, top_condition, confidence, all_predictions, model_version, age, notes)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+                (patient_id, symptoms, top_condition, confidence, all_predictions,
+                 model_version, age, notes, is_fallback)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
             RETURNING id, created_at
             """,
-            patient_id, symptoms, top_condition, confidence, json.dumps(all_preds), model_ver, age, notes
+            patient_id, symptoms, top_condition, confidence,
+            json.dumps(all_preds), MODEL_VERSION, age, notes, is_fallback,
         )
 
-    return {
+    response: dict = {
         "record_id": row["id"],
         "patient_id": patient_id,
         "symptoms": symptoms,
         "top_condition": top_condition,
         "confidence": confidence,
         "all_predictions": all_preds,
-        "model_version": model_ver,
+        "model_version": MODEL_VERSION,
         "created_at": row["created_at"],
+        "is_fallback": is_fallback,
     }
+    if is_fallback:
+        response["fallback_message"] = FALLBACK_MESSAGE
+    return response
 
 
 async def get_prediction_by_id(record_id: int) -> dict | None:
@@ -140,7 +180,8 @@ async def get_prediction_by_id(record_id: int) -> dict | None:
         row = await conn.fetchrow("SELECT * FROM predictions WHERE id = $1", record_id)
     if row is None:
         return None
-    return {
+    is_fallback = bool(row["is_fallback"]) if row["is_fallback"] is not None else False
+    record: dict = {
         "record_id": row["id"],
         "patient_id": row["patient_id"],
         "symptoms": row["symptoms"],
@@ -149,7 +190,11 @@ async def get_prediction_by_id(record_id: int) -> dict | None:
         "all_predictions": json.loads(row["all_predictions"]),
         "model_version": row["model_version"],
         "created_at": row["created_at"],
+        "is_fallback": is_fallback,
     }
+    if is_fallback:
+        record["fallback_message"] = FALLBACK_MESSAGE
+    return record
 
 
 async def close_db_pool():

@@ -7,3 +7,4 @@ torch==2.5.1
 numpy==1.26.4
 python-dotenv==1.0.1
 httpx==0.28.0
+tenacity==8.2.3

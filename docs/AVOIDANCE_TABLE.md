@@ -78,3 +78,28 @@ def get_classifier():
 **Problem:** The `asyncpg` connection pool was initialized on startup but never explicitly closed when the service stopped, leading to hanging connections in PostgreSQL.
 
 **Fix:** Added an explicit `await core.close_db_pool()` call to the FastAPI `lifespan` shutdown phase (after the `yield` statement) to gracefully drain and close all database connections.
+
+---
+
+## Mistake 6 — No retry or fallback for model inference failures
+
+**Problem:** `classify_symptoms` called the HuggingFace pipeline directly with no retry logic. A single transient error (GPU OOM, thread timeout, etc.) immediately raised `RuntimeError`, which the API layer converted to `HTTP 503 Service Unavailable`, crashing the request with no recovery attempt. When the model failed to load (`_classifier = None`) there was also no fallback — the service simply refused all prediction requests.
+
+**Fix — Layer 1, retry with tenacity:** The synchronous inference call is now wrapped in `_run_inference`, decorated with `@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True)`. Up to 3 attempts are made with exponential backoff before the failure is considered permanent.
+
+```python
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+def _run_inference(clf, symptoms: str) -> dict:
+    return clf(symptoms, CONDITION_LABELS, multi_label=False)
+```
+
+**Fix — Layer 2, default fallback response:** When the classifier is `None` or all retries fail, `classify_symptoms` no longer raises. It returns a safe default dict with `is_fallback=True`, `top_condition="unclassifiable"`, `confidence=0.0`, and a Vietnamese advisory message. The `try/except RuntimeError` in `api.py` is removed; `POST /predict` always returns `201`.
+
+**Fix — Layer 3, audit persistence:** Fallback records are stored in PostgreSQL with an `is_fallback BOOLEAN` column so the care team can identify unclassified requests and data analysts can exclude them from model metrics.
+
+**How to verify:** When the model fails to load or inference throws, `POST /predict` returns `201` with `"is_fallback": true` and `"fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"` instead of `503`.

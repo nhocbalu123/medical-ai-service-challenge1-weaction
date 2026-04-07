@@ -60,6 +60,23 @@ curl -X POST http://localhost:8000/predict \
   }'
 ```
 
+### POST /predict — fallback response (model unavailable)
+
+When the model is unavailable the API still returns `201`. Check `is_fallback`:
+
+```bash
+# Example response when model failed to load or all retries exhausted:
+# {
+#   "record_id": 7,
+#   "patient_id": "P-042",
+#   "top_condition": "unclassifiable",
+#   "confidence": 0.0,
+#   "all_predictions": [],
+#   "is_fallback": true,
+#   "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
+# }
+```
+
 ### POST /predict — bad input → 422
 ```bash
 # symptoms too short
@@ -97,28 +114,55 @@ http://localhost:8000/docs
 
 ```sql
 CREATE TABLE predictions (
-    id            SERIAL PRIMARY KEY,
-    patient_id    VARCHAR(64) NOT NULL,
-    symptoms      TEXT NOT NULL,
-    top_condition VARCHAR(128),
-    confidence    FLOAT,
+    id              SERIAL PRIMARY KEY,
+    patient_id      VARCHAR(64) NOT NULL,
+    symptoms        TEXT NOT NULL,
+    top_condition   VARCHAR(128),
+    confidence      FLOAT,
     all_predictions JSONB,
-    model_version VARCHAR(32),
-    age           SMALLINT,
-    notes         TEXT,
-    created_at    TIMESTAMPTZ DEFAULT NOW()
+    model_version   VARCHAR(32),
+    age             SMALLINT,
+    notes           TEXT,
+    is_fallback     BOOLEAN DEFAULT FALSE,  -- TRUE when model was unavailable or all retries failed
+    created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+```
+
+To find all fallback records (where the model could not classify):
+
+```sql
+SELECT id, patient_id, created_at FROM predictions WHERE is_fallback = TRUE ORDER BY created_at DESC;
 ```
 
 ---
 
-## 4. Troubleshooting
+## 4. Fallback Behaviour
+
+When the HuggingFace model cannot classify (model failed to load, or inference fails after 3 retry attempts), `POST /predict` returns `201 Created` — **not** `503`. The response body contains:
+
+```json
+{
+  "is_fallback": true,
+  "top_condition": "unclassifiable",
+  "confidence": 0.0,
+  "all_predictions": [],
+  "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
+}
+```
+
+- Check `GET /health` — `"model": "unavailable"` confirms the model failed to load.
+- Retry attempts are logged as `WARNING` before each sleep; the final failure is logged as `ERROR`.
+- All fallback records are saved to the DB with `is_fallback = TRUE`. Use the query in section 3 to audit them.
+
+---
+
+## 5. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `api` container unhealthy | Service not ready yet | Wait 30–60 s, check `docker logs medical_api` |
 | `medical_db is unhealthy` + warning `POSTGRES_PASSWORD variable is not set` | Docker Compose v2 reads `.env` from the project directory, which defaults to the folder of the `-f` file (`docker/`) — not the repo root | Ensure `docker-compose.yml` has `env_file: - ../.env` on both services (already fixed); alternatively run with `--env-file .env` |
-| `/predict` returns 503 Service Unavailable | Model failed to load | Check `/health` endpoint — if `"model": "unavailable"`, see logs: `docker logs medical_api \| grep "Model load failed"` |
+| `/predict` returns `is_fallback: true` | Model unavailable or inference keeps failing | Check `/health` → `"model": "unavailable"` confirms load failure; see logs: `docker logs medical_api \| grep "Model load failed"`. For transient inference errors: `docker logs medical_api \| grep "Inference failed"` |
 | `docker build` fails at model download step | No internet access during build | Build requires internet access once to fetch `facebook/bart-large-mnli` (~1.6 GB) |
 | `db` connection refused | Postgres not ready | `docker ps` → wait for `(healthy)` on `medical_db` |
 | 422 on valid-looking input | `symptoms` < 10 chars | Minimum 10 characters required |

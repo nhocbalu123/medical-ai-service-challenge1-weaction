@@ -47,6 +47,8 @@ class PredictionResponse(BaseModel):
     all_predictions: list[ConditionScore]
     model_version: str
     created_at: datetime
+    is_fallback: bool = False
+    fallback_message: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

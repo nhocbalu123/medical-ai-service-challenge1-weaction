@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.0] - 2026-04-08
+
+### Added
+
+- **Retry logic for model inference (`tenacity`).** The HuggingFace inference call is now wrapped with `tenacity` retry logic: up to 3 attempts with exponential backoff (1 s → 8 s). Transient inference failures (e.g. GPU OOM, timeout) are retried automatically before triggering the fallback path. A warning is logged before each retry.
+- **Default fallback response.** When the classifier is `None` (failed to load) or all inference retries are exhausted, `classify_symptoms` no longer raises `RuntimeError`. Instead it returns a safe default: `top_condition="unclassifiable"`, `confidence=0.0`, `all_predictions=[]`, and a Vietnamese advisory message in `fallback_message` ("Không thể phân loại, vui lòng tham khảo bác sĩ"). The API always returns `201 Created`; callers should inspect the `is_fallback` field.
+- **`is_fallback` column in `predictions` table.** Fallback records are persisted to PostgreSQL with `is_fallback=TRUE` so analysts can exclude them from model performance metrics and clinicians have a full audit trail. An `ADD COLUMN IF NOT EXISTS` migration guard handles existing databases automatically.
+- **`is_fallback` and `fallback_message` in `PredictionResponse`.** Both fields are now part of the API response schema. `is_fallback` defaults to `false` for normal results; `fallback_message` is `null` unless the fallback path was taken.
+- **`tenacity==8.2.3`** added to `requirements.txt`.
+
+### Changed
+
+- **`POST /predict` never returns `503`.** The `try/except RuntimeError` that converted a load failure to HTTP 503 has been removed from `api.py`. Model unavailability is now surfaced gracefully via `is_fallback=true` in the response body.
+
+---
+
 ## [2.1.0] - 2026-04-07
 
 ### Fixed
