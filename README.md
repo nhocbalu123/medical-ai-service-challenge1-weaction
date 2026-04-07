@@ -22,7 +22,7 @@ GET  /health    →  check DB + model status  →  return JSON
 ## 🚀 Quick Start (Docker Compose)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/medical-ai-service-challenge1-weaction.git
+git clone https://github.com/nhocbalu123/medical-ai-service-challenge1-weaction.git
 cd medical-ai-service-challenge1-weaction
 
 # Supply required secrets (POSTGRES_PASSWORD is mandatory — no default)

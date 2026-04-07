@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [2.1.0] - 2026-04-07
+
 ### Fixed
 
 - **Awaited model warm-up in lifespan.** The service now waits for the HuggingFace model to finish loading into memory before it starts accepting HTTP requests. This prevents early requests from hitting a `503 Service Unavailable` error during the first few seconds of startup.
@@ -134,6 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/YOUR_USERNAME/medical-ai-service/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/YOUR_USERNAME/medical-ai-service/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/YOUR_USERNAME/medical-ai-service/releases/tag/v1.0.0
+[Unreleased]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/nhocbalu123/medical-ai-service/releases/tag/v1.0.0
