@@ -2,6 +2,8 @@
 
 ## Service: Medical Symptom Classifier API
 
+This repository is a standalone backend service, built as a monolith, organized in a layered architecture.
+
 ---
 
 ## 1. Running the Service
@@ -10,7 +12,7 @@
 - Docker Desktop (or Docker Engine + Compose plugin)
 - 4 GB RAM minimum (for HuggingFace model)
 - ~3 GB free disk space (model weights are baked into the image at build time)
-- Port 8000 and 5432 free
+- Ports **8000** (API), **9090** (Prometheus), and **3000** (Grafana) free on the host. PostgreSQL runs inside the Docker network only — port 5432 is **not** published to the host.
 - Internet access during `docker build` (to download `facebook/bart-large-mnli` weights once)
 
 ### Start
@@ -23,11 +25,13 @@ docker compose -f docker/docker-compose.yml up --build -d
 # Watch logs
 docker compose -f docker/docker-compose.yml logs -f api
 
-# Verify both healthy
+# Verify all containers healthy
 docker ps
-# NAMES          STATUS
-# medical_api    Up X minutes (healthy)
-# medical_db     Up X minutes (healthy)
+# NAMES                  STATUS
+# medical_api            Up X minutes (healthy)
+# medical_db             Up X minutes (healthy)
+# medical_prometheus     Up X minutes
+# medical_grafana        Up X minutes
 ```
 
 ### Stop
@@ -156,14 +160,94 @@ When the HuggingFace model cannot classify (model failed to load, or inference f
 
 ---
 
-## 5. Troubleshooting
+## 5. Observability
+
+### Reading Structured Logs
+
+All log output is structured JSON by default. To read and filter logs:
+
+```bash
+# Pretty-print all logs
+docker logs medical_api | python -m json.tool
+
+# With jq (if installed)
+docker logs medical_api | jq .
+
+# Filter to a specific request_id
+docker logs medical_api | jq 'select(.request_id == "3fa85f64-...")'
+
+# Show only errors
+docker logs medical_api | jq 'select(.level == "error")'
+```
+
+Each request emits a log line with these fields:
+
+```json
+{"timestamp": "2026-04-08T10:00:00Z", "level": "info", "event": "request_completed",
+ "request_id": "3fa85f64-...", "method": "POST", "path": "/predict",
+ "status_code": 201, "duration_ms": 312.5}
+```
+
+Set `LOG_FORMAT=console` in `.env` for human-readable output during local development.
+
+### Checking Prometheus Metrics
+
+```bash
+# Raw metrics endpoint
+curl http://localhost:8000/metrics
+
+# Open Prometheus UI at
+open http://localhost:9090
+```
+
+Useful PromQL queries:
+
+```promql
+# Request rate over 1 minute
+rate(http_requests_total[1m])
+
+# 95th-percentile latency
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+
+# Current process memory in MB
+process_rss_bytes / 1024 / 1024
+
+# Error rate (4xx + 5xx)
+rate(http_requests_total{status=~"[45].."}[1m])
+```
+
+### Grafana Dashboards
+
+Open Grafana at http://localhost:3000 (default credentials: `admin` / `admin`).
+
+The Prometheus datasource is pre-provisioned automatically. To build a dashboard:
+1. Click **+** → **New Dashboard** → **Add visualization**
+2. Select the **Prometheus** datasource
+3. Enter a PromQL query (e.g. `rate(http_requests_total[1m])`)
+
+### Langfuse LLM Traces
+
+Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` in `.env`, then restart the service. Each call to `POST /predict` creates a trace named `classify_symptoms` with a generation span named `zero-shot-classification`.
+
+- Cloud UI: https://cloud.langfuse.com
+- Self-hosted: set `LANGFUSE_HOST` to your instance URL
+
+Traces include: model name, input symptoms, top predicted condition, and approximate token count. If keys are not set, tracing is silently skipped — the service functions normally.
+
+---
+
+## 6. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `api` container unhealthy | Service not ready yet | Wait 30–60 s, check `docker logs medical_api` |
 | `medical_db is unhealthy` + warning `POSTGRES_PASSWORD variable is not set` | Docker Compose v2 reads `.env` from the project directory, which defaults to the folder of the `-f` file (`docker/`) — not the repo root | Ensure `docker-compose.yml` has `env_file: - ../.env` on both services (already fixed); alternatively run with `--env-file .env` |
-| `/predict` returns `is_fallback: true` | Model unavailable or inference keeps failing | Check `/health` → `"model": "unavailable"` confirms load failure; see logs: `docker logs medical_api \| grep "Model load failed"`. For transient inference errors: `docker logs medical_api \| grep "Inference failed"` |
+| `/predict` returns `is_fallback: true` | Model unavailable or inference keeps failing | Check `/health` → `"model": "unavailable"` confirms load failure; filter logs: `docker logs medical_api \| jq 'select(.event == "model_load_failed")'`. For transient inference errors filter for `inference_failed`. |
 | `docker build` fails at model download step | No internet access during build | Build requires internet access once to fetch `facebook/bart-large-mnli` (~1.6 GB) |
 | `db` connection refused | Postgres not ready | `docker ps` → wait for `(healthy)` on `medical_db` |
 | 422 on valid-looking input | `symptoms` < 10 chars | Minimum 10 characters required |
 | Port 8000 already in use | Another service on port | `lsof -i :8000`, kill it, or change port in compose |
+| `GET /metrics` returns 404 | Prometheus instrumentator not wired | Verify `Instrumentator(...).instrument(app).expose(app)` is called in `main.py` |
+| Prometheus shows `medical_api` target as DOWN | DNS resolution fails inside Compose network | Ensure the target in `prometheus.yml` is `api:8000` (the Compose service name), not `localhost:8000` |
+| Logs are printed as plain text, not JSON | `LOG_FORMAT` not set to `json` | Set `LOG_FORMAT=json` in `.env` and restart |
+| Langfuse traces not appearing | Keys missing or wrong host | Verify `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set; check for `langfuse_init_failed` event in logs |

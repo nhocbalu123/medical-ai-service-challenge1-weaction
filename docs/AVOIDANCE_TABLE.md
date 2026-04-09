@@ -25,7 +25,7 @@ RUN chmod -R a+rX /hf-cache
 ENV HF_HOME=/hf-cache
 ```
 
-**Fix — Layer 2, explicit error instead of mock data (safety net):** `get_classifier()` wraps the load in `try/except` and returns `None` on failure. `classify_symptoms()` detects `None` and raises a `RuntimeError`, which the API layer catches and returns as an HTTP 503 Service Unavailable. The service stays alive to serve `/health` (which reports `"model": "unavailable"`) and other endpoints, but explicitly refuses to make fake predictions.
+**Fix — Layer 2, explicit error instead of mock data (safety net):** `get_classifier()` wraps the load in `try/except` and returns `None` on failure. `classify_symptoms()` detects `None` and, at this stage, raised a `RuntimeError` that the API layer converted to HTTP 503. The service stayed alive to serve `/health` (which reports `"model": "unavailable"`) and other endpoints, but explicitly refused to make fake predictions.
 
 ```python
 def get_classifier():
@@ -39,7 +39,7 @@ def get_classifier():
     return _classifier
 ```
 
-**How to verify:** If the model fails to load, POSTing to `/predict` will return a 503 error instead of a fake prediction.
+> **Note:** The Layer 2 behaviour (503 on model failure) was subsequently improved in **Mistake 6**. `classify_symptoms` no longer raises; it returns a safe fallback dict with `is_fallback=True`. `POST /predict` now always returns `201 Created` — see Mistake 6 for the current verification steps.
 
 ---
 

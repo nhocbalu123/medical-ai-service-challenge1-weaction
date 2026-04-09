@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.0] - 2026-04-08
+
+### Added
+
+- **Structured logging (`structlog`).** All log output is now structured JSON by default (configurable via `LOG_FORMAT=json|console`). Log lines include `timestamp`, `level`, `logger`, and typed key-value fields instead of free-text strings. All existing `logging.getLogger` calls in `core.py` replaced with `structlog.get_logger` using key-value style (e.g. `model=MODEL_NAME` instead of f-string messages).
+- **Request/response logging middleware (`app/middleware/logging.py`).** A `BaseHTTPMiddleware` now runs for every request. It generates a UUID `request_id`, binds it to the structlog context (so all log lines during that request carry it), adds an `X-Request-ID` response header, and emits a `request_completed` log line with `method`, `path`, `status_code`, and `duration_ms`.
+- **Prometheus metrics (`/metrics` endpoint).** `prometheus-fastapi-instrumentator` auto-instruments all routes, exposing `http_requests_total` and `http_request_duration_seconds` histograms. Two custom `psutil`-based gauges — `process_cpu_percent` and `process_rss_bytes` — are refreshed on every Prometheus scrape.
+- **Langfuse LLM tracing (`app/services/core.py`).** Each call to `classify_symptoms` creates a Langfuse trace with a `zero-shot-classification` generation span recording the model name, input symptoms, top condition output, and token count. Tracing is opt-in: it is silently disabled when `LANGFUSE_PUBLIC_KEY` is not set, so the service works without a Langfuse instance.
+- **Local observability demo stack (`docker/docker-compose.yml`).** Two new services added under a clearly marked `# Local observability demo` comment: `prometheus` (`prom/prometheus:v2.53.0`, port 9090) and `grafana` (`grafana/grafana:11.0.0`, port 3000). Grafana starts with the Prometheus datasource pre-provisioned via `docker/grafana/provisioning/`.
+- **`docker/prometheus.yml`** Prometheus scrape config targeting `api:8000` at `/metrics` every 15 s.
+- **`app/core/logging_config.py`** — `configure_logging()` function that wires structlog with a `ProcessorFormatter` over the stdlib logging system; called once at app startup from `main.py`.
+- New dependencies: `structlog==25.5.0`, `prometheus-fastapi-instrumentator==7.1.0`, `langfuse==4.0.6`, `psutil==7.2.2`.
+- New environment variables: `LOG_FORMAT`, `LOG_LEVEL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`, `GRAFANA_USER`, `GRAFANA_PASSWORD` (all optional, documented in `.env.example`).
+
+### Changed
+
+- `app/main.py` updated to call `configure_logging()` at startup, register `RequestLoggingMiddleware`, and wire the Prometheus instrumentator.
+- Docker Compose `api` service now forwards `LOG_FORMAT`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` environment variables into the container.
+
+---
+
 ## [2.2.0] - 2026-04-08
 
 ### Added
@@ -154,7 +175,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/nhocbalu123/medical-ai-service/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.2.0...v3.0.0
+[2.2.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/nhocbalu123/medical-ai-service/releases/tag/v1.0.0

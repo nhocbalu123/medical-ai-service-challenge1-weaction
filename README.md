@@ -1,7 +1,7 @@
 # 🏥 Medical Symptom Classifier API
 ### `medical-ai-service-challenge1-weaction`
 
-A production-ready **FastAPI** microservice that wraps a HuggingFace zero-shot classification model to predict likely medical conditions from free-text symptom descriptions. All predictions are persisted to **PostgreSQL** for tracking and audit.
+A production-ready **FastAPI** standalone backend service, built as a monolith, organized in a layered architecture, that wraps a HuggingFace zero-shot classification model to predict likely medical conditions from free-text symptom descriptions. All predictions are persisted to **PostgreSQL** for tracking and audit.
 
 > ⚠️ **Disclaimer:** This service is for educational/demo purposes only. It is NOT a substitute for professional medical diagnosis or advice.
 
@@ -16,7 +16,7 @@ GET  /predict/{id}  →  fetch from Postgres  →  return JSON
 GET  /health    →  check DB + model status  →  return JSON
 ```
 
-**Tech stack:** FastAPI · Pydantic v2 · asyncpg · HuggingFace Transformers · PostgreSQL 16 · Docker multi-stage
+**Tech stack:** FastAPI · Pydantic v2 · asyncpg · HuggingFace Transformers · PostgreSQL 16 · Docker multi-stage · structlog · Prometheus · Langfuse
 
 ---
 
@@ -30,11 +30,11 @@ cd medical-ai-service-challenge1-weaction
 cp .env.example .env
 # Edit .env and set POSTGRES_PASSWORD to a strong value before continuing
 
-# Build and start both services (api + db)
+# Build and start all services (api + db + prometheus + grafana)
 # Note: first build takes ~5–10 min — downloads facebook/bart-large-mnli (~1.6 GB) into the image
 docker compose -f docker/docker-compose.yml up --build
 
-# Check both containers are healthy
+# Check containers are healthy
 docker ps
 
 # Health check
@@ -62,21 +62,81 @@ open http://localhost:8000/docs
 medical-ai-service/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py             # FastAPI app + router registration
-│   ├── routers/api.py      # 3 endpoints: POST /predict, GET /predict/{id}, GET /health
-│   ├── models/schemas.py   # Pydantic request/response models
-│   └── services/core.py    # HuggingFace classifier + asyncpg DB logic
+│   ├── main.py                    # FastAPI app, middleware, Prometheus setup
+│   ├── core/logging_config.py     # structlog JSON/console setup
+│   ├── middleware/logging.py      # Request ID, duration, status logging
+│   ├── routers/api.py             # 3 endpoints: POST /predict, GET /predict/{id}, GET /health
+│   ├── models/schemas.py          # Pydantic request/response models
+│   └── services/core.py           # HuggingFace classifier + asyncpg DB + Langfuse tracing
 ├── docker/
-│   ├── Dockerfile          # Multi-stage build (python:3.11-slim)
-│   └── docker-compose.yml  # api + db, healthchecks, env vars
+│   ├── Dockerfile                 # Multi-stage build (python:3.11-slim)
+│   ├── docker-compose.yml         # api + db + prometheus + grafana
+│   ├── prometheus.yml             # Prometheus scrape config
+│   └── grafana/provisioning/      # Auto-provisions Prometheus datasource in Grafana
 ├── docs/
-│   ├── RUNBOOK.md          # Detailed ops guide + troubleshooting
-│   └── AVOIDANCE_TABLE.md  # Real issue: classifier randomness + solution
-├── utils/                  # Screenshots as proof of working service
+│   ├── RUNBOOK.md                 # Detailed ops guide + troubleshooting
+│   ├── CHANGELOG.md               # Version history
+│   └── AVOIDANCE_TABLE.md         # Real issues encountered and resolved
+├── tests/
+│   ├── conftest.py                # Test fixtures and dependency stubs
+│   └── test_api.py                # API smoke tests
 ├── requirements.txt
+├── requirements-dev.txt
+├── .env.example
 ├── .dockerignore
 └── README.md
 ```
+
+---
+
+## 📊 Observability
+
+The service is fully instrumented out of the box.
+
+### Structured Logging
+
+All log output is **structured JSON** by default (set `LOG_FORMAT=console` for human-readable output during local development). Every log line includes a `timestamp`, `level`, `logger`, and any structured fields relevant to the event.
+
+Every HTTP request automatically emits a log line with `request_id`, `method`, `path`, `status_code`, and `duration_ms`. The `X-Request-ID` response header carries the same ID so callers can correlate logs.
+
+```json
+{"timestamp": "2026-04-08T10:00:00Z", "level": "info", "event": "request_completed",
+ "request_id": "3fa85f64-...", "method": "POST", "path": "/predict",
+ "status_code": 201, "duration_ms": 312.5}
+```
+
+### Metrics (`/metrics`)
+
+Prometheus-format metrics are exposed at `GET /metrics`. Key metrics:
+
+| Metric | Description |
+|--------|-------------|
+| `http_requests_total` | Request count by method, path, and status code |
+| `http_request_duration_seconds` | Request latency histogram |
+| `process_cpu_percent` | Current process CPU % |
+| `process_rss_bytes` | Current process RSS memory in bytes |
+
+### Local Observability Demo
+
+The `docker-compose.yml` includes a pre-configured **Prometheus + Grafana** stack for local development. After `docker compose up`:
+
+| UI | URL | Credentials |
+|----|-----|-------------|
+| Prometheus | http://localhost:9090 | — |
+| Grafana | http://localhost:3000 | admin / admin |
+
+Grafana starts with the Prometheus datasource pre-provisioned. Create a new dashboard and query `http_requests_total` or `http_request_duration_seconds` to get started.
+
+> In production, Prometheus and Grafana live in a shared ops/infra stack. The service itself only cares about exposing `/metrics`; the docker-compose containers are a demo convenience.
+
+### LLM Tracing (Langfuse)
+
+Each inference call is traced as a **Langfuse generation** with the model name, input symptoms, top predicted condition, and latency. Tracing is opt-in and disabled when `LANGFUSE_PUBLIC_KEY` is not set.
+
+To enable:
+1. Sign up at [cloud.langfuse.com](https://cloud.langfuse.com) (free tier available) or self-host Langfuse.
+2. Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and optionally `LANGFUSE_HOST` in your `.env`.
+3. Restart the service — traces appear in the Langfuse dashboard immediately.
 
 ---
 
@@ -87,6 +147,7 @@ medical-ai-service/
 | `POST` | `/predict` | Submit symptoms → get AI prediction + saved to DB. Always returns `201`; check `is_fallback` when the model is unavailable. |
 | `GET`  | `/predict/{id}` | Retrieve a saved prediction by record ID |
 | `GET`  | `/health` | Live status of API, DB, and model |
+| `GET`  | `/metrics` | Prometheus metrics endpoint |
 
 ### Fallback behaviour
 
@@ -117,11 +178,18 @@ Copy `.env.example` to `.env` and fill in the required values before running.
 | `POSTGRES_PASSWORD` | **yes** | — | Password for the PostgreSQL `postgres` user |
 | `POSTGRES_DB` | no | `medicaldb` | PostgreSQL database name |
 | `POSTGRES_USER` | no | `postgres` | PostgreSQL user |
-| `POSTGRES_HOST` | no | `db` | PostgreSQL hostname (set to `db` by Compose for the internal network) |
+| `POSTGRES_HOST` | no | `db` | PostgreSQL hostname (`db` inside Compose network) |
 | `POSTGRES_PORT` | no | `5432` | PostgreSQL port |
-| `DATABASE_URL` | no | *(built from above)* | Full Postgres connection string; overrides the individual `POSTGRES_*` vars when set |
+| `DATABASE_URL` | no | *(built from above)* | Full Postgres DSN; overrides `POSTGRES_*` vars when set |
 | `MODEL_NAME` | no | `facebook/bart-large-mnli` | HuggingFace model ID |
 | `MODEL_VERSION` | no | `1.0.0` | Version string surfaced in prediction responses |
+| `LOG_FORMAT` | no | `json` | Log output format: `json` (machine-readable) or `console` (human-readable) |
+| `LOG_LEVEL` | no | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LANGFUSE_PUBLIC_KEY` | no | — | Langfuse public key; tracing disabled when not set |
+| `LANGFUSE_SECRET_KEY` | no | — | Langfuse secret key |
+| `LANGFUSE_HOST` | no | — | Langfuse host URL; omit for cloud.langfuse.com |
+| `GRAFANA_USER` | no | `admin` | Grafana admin username (local demo stack only) |
+| `GRAFANA_PASSWORD` | no | `admin` | Grafana admin password (local demo stack only) |
 
 > The service **refuses to start** if neither `DATABASE_URL` nor `POSTGRES_PASSWORD` is set.
 >

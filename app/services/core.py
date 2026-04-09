@@ -3,16 +3,18 @@ Business logic: wraps the HuggingFace zero-shot classification pipeline
 and handles DB persistence via asyncpg.
 """
 import json
+import logging
 import os
 import asyncio
 import asyncpg
-import logging
+import structlog
 from datetime import datetime, timezone
 from typing import Optional
 
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
+_tenacity_logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.getenv("MODEL_NAME", "facebook/bart-large-mnli")
 MODEL_VERSION = os.getenv("MODEL_VERSION", "1.0.0")
@@ -49,12 +51,23 @@ _db_pool: Optional[asyncpg.Pool] = None
 
 FALLBACK_MESSAGE = "Không thể phân loại, vui lòng tham khảo bác sĩ"
 
+# ── Langfuse client (optional) ───────────────────────────────────────────────
+# Tracing is silently disabled when LANGFUSE_PUBLIC_KEY is not set so the
+# service works normally without a Langfuse instance.
+_langfuse = None
+if os.getenv("LANGFUSE_PUBLIC_KEY"):
+    try:
+        from langfuse import Langfuse
+        _langfuse = Langfuse()
+    except Exception as _lf_err:
+        logger.warning("langfuse_init_failed", error=str(_lf_err))
+
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=8),
     reraise=True,
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=before_sleep_log(_tenacity_logger, logging.WARNING),
 )
 def _run_inference(clf, symptoms: str) -> dict:
     """Synchronous inference call; tenacity retries up to 3 times with exponential backoff."""
@@ -67,11 +80,11 @@ def get_classifier():
     if _classifier is None:
         try:
             from transformers import pipeline
-            logger.info(f"Loading model: {MODEL_NAME}")
+            logger.info("model_loading", model=MODEL_NAME)
             _classifier = pipeline("zero-shot-classification", model=MODEL_NAME)
-            logger.info("Model loaded successfully")
+            logger.info("model_loaded", model=MODEL_NAME)
         except Exception as e:
-            logger.error(f"Model load failed: {e}")
+            logger.error("model_load_failed", model=MODEL_NAME, error=str(e))
             _classifier = None
     return _classifier
 
@@ -108,7 +121,7 @@ async def init_db():
                 ADD COLUMN IF NOT EXISTS notes       TEXT,
                 ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN DEFAULT FALSE
         """)
-    logger.info("DB initialized")
+    logger.info("db_initialized")
 
 
 async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, notes: str | None) -> dict:
@@ -121,16 +134,35 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
     clf = get_classifier()
     is_fallback = False
 
+    # ── Langfuse trace ───────────────────────────────────────────────────────
+    lf_trace = None
+    lf_generation = None
+    if _langfuse is not None:
+        lf_trace = _langfuse.trace(
+            name="classify_symptoms",
+            user_id=patient_id,
+            metadata={"age": age, "notes": notes},
+        )
+
     if clf is None:
-        logger.warning("Classifier unavailable — returning fallback response")
+        logger.warning("classifier_unavailable", patient_id=patient_id)
         is_fallback = True
     else:
+        if lf_trace is not None:
+            lf_generation = lf_trace.generation(
+                name="zero-shot-classification",
+                model=MODEL_NAME,
+                model_parameters={"labels": CONDITION_LABELS},
+                input=symptoms,
+            )
         try:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, lambda: _run_inference(clf, symptoms))
         except Exception as exc:
-            logger.error("Inference failed after all retries: %s", exc)
+            logger.error("inference_failed", patient_id=patient_id, error=str(exc))
             is_fallback = True
+            if lf_generation is not None:
+                lf_generation.end(level="ERROR", status_message=str(exc))
 
     if is_fallback:
         top_condition = "unclassifiable"
@@ -143,6 +175,12 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
         ]
         top_condition = all_preds[0]["label"]
         confidence = all_preds[0]["score"]
+
+        if lf_generation is not None:
+            lf_generation.end(
+                output=top_condition,
+                usage={"input": len(symptoms.split()), "total": len(symptoms.split())},
+            )
 
     pool = await get_db_pool()
     async with pool.acquire() as conn:
@@ -157,6 +195,15 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
             patient_id, symptoms, top_condition, confidence,
             json.dumps(all_preds), MODEL_VERSION, age, notes, is_fallback,
         )
+
+    logger.info(
+        "prediction_saved",
+        patient_id=patient_id,
+        record_id=row["id"],
+        top_condition=top_condition,
+        confidence=round(confidence, 4),
+        is_fallback=is_fallback,
+    )
 
     response: dict = {
         "record_id": row["id"],
@@ -202,7 +249,7 @@ async def close_db_pool():
     if _db_pool is not None:
         await _db_pool.close()
         _db_pool = None
-        logger.info("DB pool closed")
+        logger.info("db_pool_closed")
 
 
 async def check_db_health() -> bool:

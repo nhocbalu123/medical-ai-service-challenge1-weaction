@@ -15,6 +15,10 @@ services:
       POSTGRES_HOST: db
       MODEL_NAME: ${MODEL_NAME:-facebook/bart-large-mnli}
       MODEL_VERSION: ${MODEL_VERSION:-1.0.0}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
     depends_on:
       db:
         condition: service_healthy
@@ -49,8 +53,53 @@ services:
       retries: 5
       start_period: 10s
 
+  # ── Local observability demo ─────────────────────────────────────
+  # NOTE: In production, Prometheus and Grafana live in a shared ops/infra
+  # stack separate from each service. These containers are provided here
+  # purely so you can run `docker compose up` and immediately see metrics
+  # at localhost:9090 (Prometheus) and localhost:3000 (Grafana).
+  # Remove this section when deploying to a real environment.
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: medical_prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - medical_net
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: medical_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - medical_net
+
 volumes:
   pg_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   medical_net:
