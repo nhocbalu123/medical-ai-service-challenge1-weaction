@@ -11,9 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`POST /predict` API contract corrected for database failures.** The `classify_symptoms` docstring falsely claimed "Never raises". The function suppresses model/inference errors (returning `is_fallback=true` in a `201` response) but has no error handling around the database write — `get_db_pool()` and the `INSERT` can raise `asyncpg.PostgresError` if the DB is unreachable. The calling endpoint in `api.py` had no `try/except`, so these exceptions produced an unstructured `500` response instead of a well-formed error.
-  - `app/services/core.py`: docstring updated to accurately document that model errors are suppressed while `asyncpg.PostgresError` propagates to the caller.
-  - `app/routers/api.py`: `predict` endpoint now wraps `classify_symptoms` in a `try/except asyncpg.PostgresError` block. DB failures are logged at `ERROR` level (`db_error_on_predict`) and re-raised as `HTTPException(503)` with a human-readable `detail` message. A `structlog` logger was also added to the router module (it previously had none).
+- **`POST /predict` DB error handler broadened to cover connection failures.** The original `except asyncpg.PostgresError` clause only caught server-acknowledged errors (constraint violations, syntax errors, etc.). When the database is actually *unreachable*, asyncpg raises `asyncpg.InterfaceError` (pool/connection errors) or a low-level `OSError` / `ConnectionRefusedError` — neither of which inherits from `PostgresError`. These escaped the handler entirely, producing an unstructured `500` instead of the documented `503`.
+  - `app/routers/api.py`: except clause broadened to `(asyncpg.PostgresError, asyncpg.InterfaceError, OSError)`.
+  - `app/services/core.py`: docstring updated to accurately document that model errors are suppressed while database errors propagate to the caller.
+
+- **OTel OTLP trace endpoint constructed incorrectly.** `app/core/telemetry.py` read `OTEL_EXPORTER_OTLP_ENDPOINT` manually via `os.getenv` and passed the raw value as `endpoint=` to `OTLPSpanExporter`. Per the OTel spec the env var is a *base URL*; the SDK auto-appends `/v1/traces` only when it reads the var itself. Passing an explicit `endpoint=` argument bypasses that logic, so any user setting the standard base URL (e.g. `http://collector:4318`) would silently send traces to the wrong path.
+  - `app/core/telemetry.py`: replaced `os.getenv(...)` + `OTLPSpanExporter(endpoint=...)` with `os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318")` and `OTLPSpanExporter()` (no arguments) so the SDK owns path construction.
+  - `.env.example`, `.env`, `README.md`: `OTEL_EXPORTER_OTLP_ENDPOINT` example value updated from `http://tempo:4318/v1/traces` to the correct base URL `http://tempo:4318`.
 
 ---
 

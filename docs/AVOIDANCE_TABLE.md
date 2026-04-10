@@ -103,3 +103,41 @@ def _run_inference(clf, symptoms: str) -> dict:
 **Fix — Layer 3, audit persistence:** Fallback records are stored in PostgreSQL with an `is_fallback BOOLEAN` column so the care team can identify unclassified requests and data analysts can exclude them from model metrics.
 
 **How to verify:** When the model fails to load or inference throws, `POST /predict` returns `201` with `"is_fallback": true` and `"fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"` instead of `503`.
+
+---
+
+## Mistake 7 — OTel OTLP endpoint path bypassed by explicit `endpoint=` argument
+
+**Problem:** `app/core/telemetry.py` read `OTEL_EXPORTER_OTLP_ENDPOINT` manually via `os.getenv` and passed the raw value as `endpoint=` to `OTLPSpanExporter`. Per the OTel spec, this env var is a *base URL*; the SDK auto-appends the signal-specific path (`/v1/traces`) only when it reads the var itself. Passing an explicit `endpoint=` argument bypasses that logic entirely — the value is used verbatim as the full URL. The built-in default worked only because it already contained `/v1/traces`; any user setting the standard base URL (e.g. `http://collector:4318`) would silently send traces to `http://collector:4318` instead of `http://collector:4318/v1/traces`, losing all trace data with no error.
+
+**Fix:** Removed the manual `os.getenv` call and the `endpoint=` argument. Instead, `os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318")` establishes the default base URL before the exporter is constructed, and `OTLPSpanExporter()` is called with no arguments so the SDK reads the env var natively and appends the correct path.
+
+```python
+# before — bypasses SDK path-appending
+otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318/v1/traces")
+BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint))
+
+# after — SDK reads env var and appends /v1/traces per spec
+os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318")
+BatchSpanProcessor(OTLPSpanExporter())
+```
+
+Updated `.env.example`, `.env`, and `README.md` to document `OTEL_EXPORTER_OTLP_ENDPOINT` as a base URL.
+
+---
+
+## Mistake 8 — Narrow exception catch lets DB connection failures escape as 500
+
+**Problem:** The `except asyncpg.PostgresError` handler in `app/routers/api.py` only covered server-acknowledged PostgreSQL errors (constraint violations, syntax errors, etc.). When the database is actually *unreachable*, asyncpg raises `asyncpg.InterfaceError` (pool/connection-management errors) or a low-level `OSError` / `ConnectionRefusedError`. Neither inherits from `PostgresError`, so these connection-level exceptions bypassed the handler entirely, producing an unstructured `500 Internal Server Error` instead of the documented `503 Service Unavailable` with a human-readable message.
+
+**Fix:** Broadened the except clause to cover all three error families:
+
+```python
+# before — misses connection-level failures
+except asyncpg.PostgresError as exc:
+
+# after — catches server errors, pool/connection errors, and OS-level network errors
+except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
+```
+
+**How to verify:** Stop the `db` container while the API is running (`docker stop medical_db`) and call `POST /predict`. The response should be `503` with `{"detail": "Database unavailable; the prediction could not be saved. Please retry later."}` and a `db_error_on_predict` log line at `ERROR` level.

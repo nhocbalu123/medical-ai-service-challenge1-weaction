@@ -30,20 +30,24 @@ def setup_telemetry() -> None:
     the same image works in every environment without rebuilding:
 
         OTEL_SERVICE_NAME              (default: medical-ai-service)
-        OTEL_EXPORTER_OTLP_ENDPOINT   (default: http://tempo:4318/v1/traces)
+        OTEL_EXPORTER_OTLP_ENDPOINT   (default: http://tempo:4318)
+                                       Must be a base URL — the SDK auto-appends
+                                       the signal-specific path (/v1/traces).
         OTEL_RESOURCE_ATTRIBUTES       (optional, e.g. deployment.environment=dev)
     """
     service_name = os.getenv("OTEL_SERVICE_NAME", "medical-ai-service")
-    otlp_endpoint = os.getenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318/v1/traces"
-    )
+
+    # Set the default base URL *before* the exporter is constructed so the SDK
+    # reads it natively and appends /v1/traces per the OTel spec.  Never pass
+    # the value as endpoint= — that bypasses the SDK's path-appending logic.
+    os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318")
 
     resource = Resource.create({"service.name": service_name})
 
     # ── Traces → Tempo via OTLP/HTTP ────────────────────────────────────────
     tracer_provider = TracerProvider(resource=resource)
     tracer_provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint))
+        BatchSpanProcessor(OTLPSpanExporter())
     )
     trace.set_tracer_provider(tracer_provider)
 

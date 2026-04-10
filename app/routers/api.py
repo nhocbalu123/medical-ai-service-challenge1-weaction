@@ -39,7 +39,7 @@ async def predict(payload: SymptomRequest):
             age=payload.age,
             notes=payload.notes,
         )
-    except asyncpg.PostgresError as exc:
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
         logger.error("db_error_on_predict", patient_id=payload.patient_id, error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

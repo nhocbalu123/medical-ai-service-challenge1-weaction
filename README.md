@@ -197,7 +197,7 @@ Copy `.env.example` to `.env` and fill in the required values before running.
 | `GRAFANA_USER` | no | `admin` | Grafana admin username (local demo stack only) |
 | `GRAFANA_PASSWORD` | no | `admin` | Grafana admin password (local demo stack only) |
 | `OTEL_SERVICE_NAME` | no | `medical-ai-service` | Service name reported in traces and metrics |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | `http://tempo:4318/v1/traces` | OTLP/HTTP endpoint for trace export; use `http://localhost:4318/v1/traces` outside Compose |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | `http://tempo:4318` | OTLP/HTTP **base URL** for trace export — the SDK auto-appends `/v1/traces`; use `http://localhost:4318` outside Compose |
 | `OTEL_RESOURCE_ATTRIBUTES` | no | `deployment.environment=dev` | Extra resource attributes attached to every span and metric |
 
 > The service **refuses to start** if neither `DATABASE_URL` nor `POSTGRES_PASSWORD` is set.

@@ -175,6 +175,8 @@ When the database is unreachable, `POST /predict` returns `503 Service Unavailab
 
 A `record_id` requires a successful DB write, so a 201 response is not possible in this case. Check `GET /health` — `"db": "unreachable"` confirms the database is down. The `db_error_on_predict` event is logged at `ERROR` level with the `asyncpg` error detail.
 
+The handler catches `asyncpg.PostgresError` (server-side errors), `asyncpg.InterfaceError` (pool/connection-management errors), and `OSError` / `ConnectionRefusedError` (low-level network failures), so all reachability scenarios produce a 503 rather than an unstructured 500.
+
 ---
 
 ## 5. Observability
@@ -276,7 +278,7 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 | Port 8000 already in use | Another service on port | `lsof -i :8000`, kill it, or change port in compose |
 | `GET /metrics` returns 404 | `/metrics` route not mounted | Verify `app.mount("/metrics", make_metrics_app())` is present in `main.py` and `setup_telemetry()` was called first |
 | `X-Trace-ID` header missing from response | OTel span not active | Verify `FastAPIInstrumentor.instrument_app(app)` runs inside the `lifespan` context manager in `main.py` before `yield` |
-| Tempo not receiving traces | OTLP endpoint unreachable | Check `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`; inside Compose use `http://tempo:4318/v1/traces`; verify `medical_tempo` container is running |
+| Tempo not receiving traces | OTLP endpoint unreachable | Check `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`; must be a base URL — inside Compose use `http://tempo:4318`, outside Compose use `http://localhost:4318` (the SDK appends `/v1/traces` automatically); verify `medical_tempo` container is running |
 | Prometheus shows `medical_api` target as DOWN | DNS resolution fails inside Compose network | Ensure the target in `prometheus.yml` is `api:8000` (the Compose service name), not `localhost:8000` |
 | Logs are printed as plain text, not JSON | `LOG_FORMAT` not set to `json` | Set `LOG_FORMAT=json` in `.env` and restart |
 | Langfuse traces not appearing | Keys missing or wrong host | Verify `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set; check for `langfuse_init_failed` event in logs |
