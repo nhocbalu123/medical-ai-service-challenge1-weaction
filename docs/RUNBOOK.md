@@ -12,7 +12,7 @@ This repository is a standalone backend service, built as a monolith, organized 
 - Docker Desktop (or Docker Engine + Compose plugin)
 - 4 GB RAM minimum (for HuggingFace model)
 - ~3 GB free disk space (model weights are baked into the image at build time)
-- Ports **8000** (API), **9090** (Prometheus), and **3000** (Grafana) free on the host. PostgreSQL runs inside the Docker network only — port 5432 is **not** published to the host.
+- Ports **8000** (API), **9090** (Prometheus), **3000** (Grafana), **4318** (Tempo OTLP ingest), and **3200** (Tempo query API) free on the host. PostgreSQL runs inside the Docker network only — port 5432 is **not** published to the host.
 - Internet access during `docker build` (to download `facebook/bart-large-mnli` weights once)
 
 ### Start
@@ -30,6 +30,7 @@ docker ps
 # NAMES                  STATUS
 # medical_api            Up X minutes (healthy)
 # medical_db             Up X minutes (healthy)
+# medical_tempo          Up X minutes
 # medical_prometheus     Up X minutes
 # medical_grafana        Up X minutes
 ```
@@ -173,8 +174,8 @@ docker logs medical_api | python -m json.tool
 # With jq (if installed)
 docker logs medical_api | jq .
 
-# Filter to a specific request_id
-docker logs medical_api | jq 'select(.request_id == "3fa85f64-...")'
+# Filter to a specific trace_id
+docker logs medical_api | jq 'select(.trace_id == "abcdef1234...")'
 
 # Show only errors
 docker logs medical_api | jq 'select(.level == "error")'
@@ -184,9 +185,11 @@ Each request emits a log line with these fields:
 
 ```json
 {"timestamp": "2026-04-08T10:00:00Z", "level": "info", "event": "request_completed",
- "request_id": "3fa85f64-...", "method": "POST", "path": "/predict",
- "status_code": 201, "duration_ms": 312.5}
+ "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "span_id": "00f067aa0ba902b7",
+ "method": "POST", "path": "/predict", "status_code": 201, "duration_ms": 312.5}
 ```
+
+The `X-Trace-ID` response header carries the same hex trace ID so callers can correlate logs with distributed traces in Grafana Tempo.
 
 Set `LOG_FORMAT=console` in `.env` for human-readable output during local development.
 
@@ -220,10 +223,17 @@ rate(http_requests_total{status=~"[45].."}[1m])
 
 Open Grafana at http://localhost:3000 (default credentials: `admin` / `admin`).
 
-The Prometheus datasource is pre-provisioned automatically. To build a dashboard:
+Both the **Prometheus** and **Tempo** datasources are pre-provisioned automatically.
+
+To build a metrics dashboard:
 1. Click **+** → **New Dashboard** → **Add visualization**
 2. Select the **Prometheus** datasource
 3. Enter a PromQL query (e.g. `rate(http_requests_total[1m])`)
+
+To explore distributed traces:
+1. Click **Explore** (compass icon in the left sidebar)
+2. Select the **Tempo** datasource
+3. Search by **Trace ID** (copy the `X-Trace-ID` response header or `trace_id` log field) or browse recent traces via **Search**
 
 ### Langfuse LLM Traces
 
@@ -247,7 +257,9 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 | `db` connection refused | Postgres not ready | `docker ps` → wait for `(healthy)` on `medical_db` |
 | 422 on valid-looking input | `symptoms` < 10 chars | Minimum 10 characters required |
 | Port 8000 already in use | Another service on port | `lsof -i :8000`, kill it, or change port in compose |
-| `GET /metrics` returns 404 | Prometheus instrumentator not wired | Verify `Instrumentator(...).instrument(app).expose(app)` is called in `main.py` |
+| `GET /metrics` returns 404 | `/metrics` route not mounted | Verify `app.mount("/metrics", make_metrics_app())` is present in `main.py` and `setup_telemetry()` was called first |
+| `X-Trace-ID` header missing from response | OTel span not active | Verify `FastAPIInstrumentor.instrument_app(app)` runs inside the `lifespan` context manager in `main.py` before `yield` |
+| Tempo not receiving traces | OTLP endpoint unreachable | Check `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`; inside Compose use `http://tempo:4318/v1/traces`; verify `medical_tempo` container is running |
 | Prometheus shows `medical_api` target as DOWN | DNS resolution fails inside Compose network | Ensure the target in `prometheus.yml` is `api:8000` (the Compose service name), not `localhost:8000` |
 | Logs are printed as plain text, not JSON | `LOG_FORMAT` not set to `json` | Set `LOG_FORMAT=json` in `.env` and restart |
 | Langfuse traces not appearing | Keys missing or wrong host | Verify `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set; check for `langfuse_init_failed` event in logs |

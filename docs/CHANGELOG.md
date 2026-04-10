@@ -11,6 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.0.0] - 2026-04-10
+
+### Added
+
+- **OpenTelemetry SDK** (`opentelemetry-sdk`, `opentelemetry-instrumentation-fastapi`, `opentelemetry-instrumentation-asyncpg`, `opentelemetry-exporter-otlp-proto-http`, `opentelemetry-exporter-prometheus`) replacing `prometheus-fastapi-instrumentator`.
+- **`app/core/telemetry.py`** — central OTel wiring: trace provider (OTLP/HTTP → Grafana Tempo), metric provider (`PrometheusMetricReader` → `/metrics`), asyncpg auto-instrumentation via `AsyncPGInstrumentor`, and `process_cpu_percent` / `process_rss_bytes` observable gauges registered on the OTel meter.
+- **`_inject_otel_context` structlog processor** (`app/core/logging_config.py`) — stamps every log line with `trace_id` and `span_id` sourced from the active OTel span so logs and traces can be correlated without manual binding.
+- **Grafana Tempo** service (`grafana/tempo:2.5.0`) in `docker/docker-compose.yml` with OTLP/HTTP receiver on port `4318` and query API on port `3200`. `docker/tempo.yaml` contains the minimal Tempo configuration.
+- **Tempo datasource** pre-provisioned in Grafana via `docker/grafana/provisioning/datasources/tempo.yml`. Distributed traces are immediately visible in Grafana Explore → Tempo.
+- New env vars: `OTEL_SERVICE_NAME` (default `medical-ai-service`), `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://tempo:4318/v1/traces`), `OTEL_RESOURCE_ATTRIBUTES` (default `deployment.environment=dev`). All optional; documented in `.env.example`.
+
+### Changed
+
+- **`app/main.py`**: `prometheus_client.Gauge` + `prometheus-fastapi-instrumentator` replaced by OTel observable gauges + `FastAPIInstrumentor`; `/metrics` endpoint now served via `prometheus_client.make_asgi_app()` mounted on the existing FastAPI app (preserves the same `api:8000/metrics` scrape target used by Prometheus).
+- **`app/middleware/logging.py`**: UUID `request_id` generation removed; `trace_id` and `span_id` are now injected into logs by the structlog processor. `X-Trace-ID` response header replaces `X-Request-ID`, carrying the W3C-compatible hex trace ID.
+- **`docker/docker-compose.yml`**: `api` service now depends on `tempo` (service_started) and receives `OTEL_*` env vars; `tempo_data` named volume added.
+
+### Removed
+
+- `prometheus-fastapi-instrumentator==7.1.0` dependency.
+
+### Breaking Changes
+
+- **`X-Request-ID` response header removed** — replaced by `X-Trace-ID`. Callers that read `X-Request-ID` must update to `X-Trace-ID`.
+- **HTTP metric names changed** from instrumentator-style (`http_requests_total`, `http_request_duration_seconds`) to OTel semantic convention names. Existing Grafana dashboards or alerting rules referencing the old metric names must be updated.
+
+---
+
 ## [3.0.0] - 2026-04-08
 
 ### Added
@@ -175,7 +203,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/nhocbalu123/medical-ai-service/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/nhocbalu123/medical-ai-service/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.0.0...v2.1.0

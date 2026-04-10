@@ -10,6 +10,19 @@ import os
 import sys
 
 import structlog
+from opentelemetry import trace as otel_trace
+
+
+def _inject_otel_context(
+    logger: object, method: str, event_dict: dict  # noqa: ARG001
+) -> dict:
+    """Structlog processor: stamp every log line with the active OTel span IDs."""
+    span = otel_trace.get_current_span()
+    ctx = span.get_span_context()
+    if ctx.is_valid:
+        event_dict["trace_id"] = format(ctx.trace_id, "032x")
+        event_dict["span_id"] = format(ctx.span_id, "016x")
+    return event_dict
 
 
 def configure_logging() -> None:
@@ -24,6 +37,7 @@ def configure_logging() -> None:
 
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        _inject_otel_context,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),

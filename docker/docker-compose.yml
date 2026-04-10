@@ -19,9 +19,14 @@ services:
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-medical-ai-service}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318/v1/traces}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment=dev}
     depends_on:
       db:
         condition: service_healthy
+      tempo:
+        condition: service_started
     restart: unless-stopped
     networks:
       - medical_net
@@ -59,6 +64,20 @@ services:
   # purely so you can run `docker compose up` and immediately see metrics
   # at localhost:9090 (Prometheus) and localhost:3000 (Grafana).
   # Remove this section when deploying to a real environment.
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: medical_tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/tmp/tempo
+    ports:
+      - "4318:4318"   # OTLP HTTP ingest
+      - "3200:3200"   # Tempo query API (Grafana datasource)
+    restart: unless-stopped
+    networks:
+      - medical_net
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -100,6 +119,7 @@ volumes:
   pg_data:
   prometheus_data:
   grafana_data:
+  tempo_data:
 
 networks:
   medical_net:

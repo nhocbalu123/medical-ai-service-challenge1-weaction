@@ -16,7 +16,7 @@ GET  /predict/{id}  →  fetch from Postgres  →  return JSON
 GET  /health    →  check DB + model status  →  return JSON
 ```
 
-**Tech stack:** FastAPI · Pydantic v2 · asyncpg · HuggingFace Transformers · PostgreSQL 16 · Docker multi-stage · structlog · Prometheus · Langfuse
+**Tech stack:** FastAPI · Pydantic v2 · asyncpg · HuggingFace Transformers · PostgreSQL 16 · Docker multi-stage · structlog · OpenTelemetry · Grafana Tempo · Prometheus · Langfuse
 
 ---
 
@@ -62,17 +62,20 @@ open http://localhost:8000/docs
 medical-ai-service/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                    # FastAPI app, middleware, Prometheus setup
-│   ├── core/logging_config.py     # structlog JSON/console setup
-│   ├── middleware/logging.py      # Request ID, duration, status logging
+│   ├── main.py                    # FastAPI app, middleware, OTel setup, /metrics mount
+│   ├── core/
+│   │   ├── logging_config.py      # structlog JSON/console setup + OTel context processor
+│   │   └── telemetry.py           # OTel trace/metric providers, asyncpg instrumentation
+│   ├── middleware/logging.py      # Request duration/status logging + X-Trace-ID header
 │   ├── routers/api.py             # 3 endpoints: POST /predict, GET /predict/{id}, GET /health
 │   ├── models/schemas.py          # Pydantic request/response models
 │   └── services/core.py           # HuggingFace classifier + asyncpg DB + Langfuse tracing
 ├── docker/
 │   ├── Dockerfile                 # Multi-stage build (python:3.11-slim)
-│   ├── docker-compose.yml         # api + db + prometheus + grafana
+│   ├── docker-compose.yml         # api + db + tempo + prometheus + grafana
+│   ├── tempo.yaml                 # Grafana Tempo config (OTLP receiver, local storage)
 │   ├── prometheus.yml             # Prometheus scrape config
-│   └── grafana/provisioning/      # Auto-provisions Prometheus datasource in Grafana
+│   └── grafana/provisioning/      # Auto-provisions Prometheus + Tempo datasources in Grafana
 ├── docs/
 │   ├── RUNBOOK.md                 # Detailed ops guide + troubleshooting
 │   ├── CHANGELOG.md               # Version history
@@ -97,12 +100,12 @@ The service is fully instrumented out of the box.
 
 All log output is **structured JSON** by default (set `LOG_FORMAT=console` for human-readable output during local development). Every log line includes a `timestamp`, `level`, `logger`, and any structured fields relevant to the event.
 
-Every HTTP request automatically emits a log line with `request_id`, `method`, `path`, `status_code`, and `duration_ms`. The `X-Request-ID` response header carries the same ID so callers can correlate logs.
+Every HTTP request automatically emits a log line with `trace_id`, `span_id`, `method`, `path`, `status_code`, and `duration_ms`. The `X-Trace-ID` response header carries the same hex trace ID so callers can correlate logs with distributed traces in Grafana Tempo.
 
 ```json
 {"timestamp": "2026-04-08T10:00:00Z", "level": "info", "event": "request_completed",
- "request_id": "3fa85f64-...", "method": "POST", "path": "/predict",
- "status_code": 201, "duration_ms": 312.5}
+ "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "span_id": "00f067aa0ba902b7",
+ "method": "POST", "path": "/predict", "status_code": 201, "duration_ms": 312.5}
 ```
 
 ### Metrics (`/metrics`)
@@ -118,14 +121,15 @@ Prometheus-format metrics are exposed at `GET /metrics`. Key metrics:
 
 ### Local Observability Demo
 
-The `docker-compose.yml` includes a pre-configured **Prometheus + Grafana** stack for local development. After `docker compose up`:
+The `docker-compose.yml` includes a pre-configured **Tempo + Prometheus + Grafana** stack for local development. After `docker compose up`:
 
 | UI | URL | Credentials |
+| UI | URL | Credentials |
 |----|-----|-------------|
+| Tempo | http://localhost:3200 | — |
 | Prometheus | http://localhost:9090 | — |
 | Grafana | http://localhost:3000 | admin / admin |
-
-Grafana starts with the Prometheus datasource pre-provisioned. Create a new dashboard and query `http_requests_total` or `http_request_duration_seconds` to get started.
+Grafana starts with both the Prometheus and Tempo datasources pre-provisioned. Build dashboards with PromQL, or explore distributed traces in **Grafana Explore → Tempo** using the `trace_id` from any log line or `X-Trace-ID` response header.
 
 > In production, Prometheus and Grafana live in a shared ops/infra stack. The service itself only cares about exposing `/metrics`; the docker-compose containers are a demo convenience.
 
@@ -190,6 +194,9 @@ Copy `.env.example` to `.env` and fill in the required values before running.
 | `LANGFUSE_HOST` | no | — | Langfuse host URL; omit for cloud.langfuse.com |
 | `GRAFANA_USER` | no | `admin` | Grafana admin username (local demo stack only) |
 | `GRAFANA_PASSWORD` | no | `admin` | Grafana admin password (local demo stack only) |
+| `OTEL_SERVICE_NAME` | no | `medical-ai-service` | Service name reported in traces and metrics |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | `http://tempo:4318/v1/traces` | OTLP/HTTP endpoint for trace export; use `http://localhost:4318/v1/traces` outside Compose |
+| `OTEL_RESOURCE_ATTRIBUTES` | no | `deployment.environment=dev` | Extra resource attributes attached to every span and metric |
 
 > The service **refuses to start** if neither `DATABASE_URL` nor `POSTGRES_PASSWORD` is set.
 >

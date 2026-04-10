@@ -2,16 +2,20 @@
 Request/response logging middleware.
 
 For every HTTP request this middleware:
-  - Generates a UUID request_id and binds it to the structlog context so
-    all log lines emitted during that request automatically include it.
-  - Adds an X-Request-ID response header so callers can correlate logs.
+  - Clears the structlog context so no state bleeds between requests.
   - Emits a single structured log line on response with: method, path,
     status_code, and duration_ms.
+  - Adds an X-Trace-ID response header carrying the active OTel trace ID so
+    callers can correlate logs with distributed traces in Grafana Tempo.
+
+trace_id and span_id are injected into every log line automatically by the
+_inject_otel_context structlog processor (app/core/logging_config.py); no
+manual binding is needed here.
 """
 import time
-import uuid
 
 import structlog
+from opentelemetry import trace
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -21,10 +25,7 @@ logger = structlog.get_logger(__name__)
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
-        request_id = str(uuid.uuid4())
-
         structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(request_id=request_id)
 
         start = time.perf_counter()
         try:
@@ -40,7 +41,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             raise
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        response.headers["X-Request-ID"] = request_id
+
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx.is_valid:
+            response.headers["X-Trace-ID"] = format(ctx.trace_id, "032x")
 
         logger.info(
             "request_completed",

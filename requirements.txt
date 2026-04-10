@@ -9,7 +9,12 @@ python-dotenv==1.0.1
 httpx==0.28.0
 tenacity==8.2.3
 # Observability
-prometheus-fastapi-instrumentator==7.1.0
+opentelemetry-sdk==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+opentelemetry-instrumentation-asyncpg==0.48b0
+opentelemetry-exporter-otlp-proto-http==1.27.0
+opentelemetry-exporter-prometheus==0.48b0
+prometheus-client==0.21.1
 structlog==25.5.0
 langfuse==4.0.6
 psutil==7.2.2
