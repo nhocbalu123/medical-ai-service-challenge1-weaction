@@ -143,7 +143,11 @@ SELECT id, patient_id, created_at FROM predictions WHERE is_fallback = TRUE ORDE
 
 ## 4. Fallback Behaviour
 
-When the HuggingFace model cannot classify (model failed to load, or inference fails after 3 retry attempts), `POST /predict` returns `201 Created` — **not** `503`. The response body contains:
+There are two distinct failure modes with different HTTP outcomes:
+
+### Model unavailable (→ 201 with `is_fallback: true`)
+
+When the HuggingFace model cannot classify (model failed to load, or inference fails after 3 retry attempts), `POST /predict` returns `201 Created`. The response body contains:
 
 ```json
 {
@@ -158,6 +162,18 @@ When the HuggingFace model cannot classify (model failed to load, or inference f
 - Check `GET /health` — `"model": "unavailable"` confirms the model failed to load.
 - Retry attempts are logged as `WARNING` before each sleep; the final failure is logged as `ERROR`.
 - All fallback records are saved to the DB with `is_fallback = TRUE`. Use the query in section 3 to audit them.
+
+### Database unavailable (→ 503)
+
+When the database is unreachable, `POST /predict` returns `503 Service Unavailable` with a structured error body:
+
+```json
+{
+  "detail": "Database unavailable; the prediction could not be saved. Please retry later."
+}
+```
+
+A `record_id` requires a successful DB write, so a 201 response is not possible in this case. Check `GET /health` — `"db": "unreachable"` confirms the database is down. The `db_error_on_predict` event is logged at `ERROR` level with the `asyncpg` error detail.
 
 ---
 
@@ -253,6 +269,7 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 | `api` container unhealthy | Service not ready yet | Wait 30–60 s, check `docker logs medical_api` |
 | `medical_db is unhealthy` + warning `POSTGRES_PASSWORD variable is not set` | Docker Compose v2 reads `.env` from the project directory, which defaults to the folder of the `-f` file (`docker/`) — not the repo root | Ensure `docker-compose.yml` has `env_file: - ../.env` on both services (already fixed); alternatively run with `--env-file .env` |
 | `/predict` returns `is_fallback: true` | Model unavailable or inference keeps failing | Check `/health` → `"model": "unavailable"` confirms load failure; filter logs: `docker logs medical_api \| jq 'select(.event == "model_load_failed")'`. For transient inference errors filter for `inference_failed`. |
+| `/predict` returns `503` | Database unreachable at request time | Check `/health` → `"db": "unreachable"`; filter logs for `db_error_on_predict`. Verify `medical_db` is running (`docker ps`) and wait for `(healthy)`. |
 | `docker build` fails at model download step | No internet access during build | Build requires internet access once to fetch `facebook/bart-large-mnli` (~1.6 GB) |
 | `db` connection refused | Postgres not ready | `docker ps` → wait for `(healthy)` on `medical_db` |
 | 422 on valid-looking input | `symptoms` < 10 chars | Minimum 10 characters required |

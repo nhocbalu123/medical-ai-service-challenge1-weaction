@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`POST /predict` API contract corrected for database failures.** The `classify_symptoms` docstring falsely claimed "Never raises". The function suppresses model/inference errors (returning `is_fallback=true` in a `201` response) but has no error handling around the database write — `get_db_pool()` and the `INSERT` can raise `asyncpg.PostgresError` if the DB is unreachable. The calling endpoint in `api.py` had no `try/except`, so these exceptions produced an unstructured `500` response instead of a well-formed error.
+  - `app/services/core.py`: docstring updated to accurately document that model errors are suppressed while `asyncpg.PostgresError` propagates to the caller.
+  - `app/routers/api.py`: `predict` endpoint now wraps `classify_symptoms` in a `try/except asyncpg.PostgresError` block. DB failures are logged at `ERROR` level (`db_error_on_predict`) and re-raised as `HTTPException(503)` with a human-readable `detail` message. A `structlog` logger was also added to the router module (it previously had none).
+
 ---
 
 ## [4.0.0] - 2026-04-10

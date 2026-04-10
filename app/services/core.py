@@ -127,9 +127,13 @@ async def init_db():
 async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, notes: str | None) -> dict:
     """Run zero-shot classification and persist result.
 
-    Never raises — if the model is unavailable or all retries fail the response
-    includes ``is_fallback=True`` and a human-readable ``fallback_message``.
-    The fallback record is still persisted to the database for audit purposes.
+    Model errors are suppressed: if the classifier is unavailable or all
+    inference retries fail, the response includes ``is_fallback=True`` and a
+    human-readable ``fallback_message``, and the record is still persisted to
+    the database for audit purposes.
+
+    Database errors (``asyncpg.PostgresError``) propagate to the caller
+    unchanged — the caller is responsible for mapping them to an HTTP response.
     """
     clf = get_classifier()
     is_fallback = False

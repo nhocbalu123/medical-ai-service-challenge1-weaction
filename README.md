@@ -148,14 +148,14 @@ To enable:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/predict` | Submit symptoms → get AI prediction + saved to DB. Always returns `201`; check `is_fallback` when the model is unavailable. |
+| `POST` | `/predict` | Submit symptoms → get AI prediction + saved to DB. Returns `201` when the model is unavailable (check `is_fallback`); returns `503` only when the database is unreachable. |
 | `GET`  | `/predict/{id}` | Retrieve a saved prediction by record ID |
 | `GET`  | `/health` | Live status of API, DB, and model |
 | `GET`  | `/metrics` | Prometheus metrics endpoint |
 
 ### Fallback behaviour
 
-If the HuggingFace model fails to load **or** inference fails after 3 retry attempts, `POST /predict` still returns `201 Created` — it never returns `503`. The response body includes:
+**Model unavailable:** If the HuggingFace model fails to load or inference fails after 3 retry attempts, `POST /predict` returns `201 Created` with `is_fallback: true`. The record is still persisted to the database for audit purposes:
 
 ```json
 {
@@ -167,7 +167,9 @@ If the HuggingFace model fails to load **or** inference fails after 3 retry atte
 }
 ```
 
-Callers should check `is_fallback` and display the `fallback_message` to the user. All fallback records are persisted to the database with `is_fallback = TRUE` for audit purposes.
+Callers should check `is_fallback` and display the `fallback_message` to the user.
+
+**Database unavailable:** If the database is unreachable, `POST /predict` returns `503 Service Unavailable`. A `record_id` cannot be issued without a successful DB write, so a graceful 201 is not possible in this case. The `GET /health` endpoint will report `"db": "unreachable"` when this condition exists.
 
 Full interactive docs: **`http://localhost:8000/docs`**
 

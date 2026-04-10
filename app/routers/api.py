@@ -1,6 +1,10 @@
+import asyncpg
+import structlog
 from fastapi import APIRouter, HTTPException, status
 from app.models.schemas import SymptomRequest, PredictionResponse, HealthResponse
 from app.services import core
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -28,12 +32,19 @@ async def predict(payload: SymptomRequest):
     Returns **201** even when the model is unavailable; check ``is_fallback`` in the
     response body and advise the patient to consult a doctor when it is ``true``.
     """
-    result = await core.classify_symptoms(
-        patient_id=payload.patient_id,
-        symptoms=payload.symptoms,
-        age=payload.age,
-        notes=payload.notes,
-    )
+    try:
+        result = await core.classify_symptoms(
+            patient_id=payload.patient_id,
+            symptoms=payload.symptoms,
+            age=payload.age,
+            notes=payload.notes,
+        )
+    except asyncpg.PostgresError as exc:
+        logger.error("db_error_on_predict", patient_id=payload.patient_id, error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable; the prediction could not be saved. Please retry later.",
+        ) from exc
     return result
 
 
