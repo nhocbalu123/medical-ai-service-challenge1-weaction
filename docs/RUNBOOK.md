@@ -224,18 +224,23 @@ open http://localhost:9090
 Useful PromQL queries:
 
 ```promql
-# Request rate over 1 minute
+# Request rate over 1 minute (all endpoints)
 rate(http_requests_total[1m])
 
-# 95th-percentile latency
-histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+# Request rate broken down by endpoint and method
+rate(http_requests_total[1m])
+
+# Error rate (4xx + 5xx) — label is status_code, not status
+rate(http_requests_total{status_code=~"4..|5.."}[1m])
 
 # Current process memory in MB
 process_rss_bytes / 1024 / 1024
 
-# Error rate (4xx + 5xx)
-rate(http_requests_total{status=~"[45].."}[1m])
+# Current CPU usage (percent)
+process_cpu_percent
 ```
+
+> **Note:** `http_requests_total` carries three labels: `method`, `path`, and `status_code`. Use `{status_code=~"..."}` (not `{status=~"..."}`) when filtering by response code.
 
 ### Grafana Dashboards
 
@@ -276,8 +281,10 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 | `db` connection refused | Postgres not ready | `docker ps` → wait for `(healthy)` on `medical_db` |
 | 422 on valid-looking input | `symptoms` < 10 chars | Minimum 10 characters required |
 | Port 8000 already in use | Another service on port | `lsof -i :8000`, kill it, or change port in compose |
+| `http_requests_total` query returns no results in Prometheus | Metric was not defined — OTel FastAPI instrumentation generates histograms with OTel-convention names, not this counter | Fixed: `RequestLoggingMiddleware` now increments an explicit `prometheus_client.Counter`. Make at least one request to the API first; the counter appears only after the first increment. Use `{status_code=~"4..|5.."}` (not `status=~`) to filter by response code. |
 | `GET /metrics` returns 404 | `/metrics` route not mounted | Verify `app.mount("/metrics", make_metrics_app())` is present in `main.py` and `setup_telemetry()` was called first |
-| `X-Trace-ID` header missing from response | OTel span not active | Verify `FastAPIInstrumentor.instrument_app(app)` runs inside the `lifespan` context manager in `main.py` before `yield` |
+| `X-Trace-ID` header missing from response | OTel span not active — `instrument_app` called inside `lifespan` too late | `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` must be at **module level** in `main.py`, not inside `lifespan`. Starlette freezes the middleware stack before lifespan runs; anything added inside lifespan is never part of the live pipeline. |
+| `medical_tempo` exits immediately on start | Named volume owned by root; Tempo UID 10001 has no write access | Volume must mount to `/var/tempo` (not `/tmp/tempo`) — the path the Tempo 2.5.0 image pre-owns as `tempo:tempo`. Confirm `docker-compose.yml` has `tempo_data:/var/tempo` and `tempo.yaml` uses `/var/tempo/blocks` and `/var/tempo/wal`. If you have an old `tempo_data` volume from a previous run, destroy it first: `docker volume rm <project>_tempo_data` |
 | Tempo not receiving traces | OTLP endpoint unreachable | Check `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`; must be a base URL — inside Compose use `http://tempo:4318`, outside Compose use `http://localhost:4318` (the SDK appends `/v1/traces` automatically); verify `medical_tempo` container is running |
 | Prometheus shows `medical_api` target as DOWN | DNS resolution fails inside Compose network | Ensure the target in `prometheus.yml` is `api:8000` (the Compose service name), not `localhost:8000` |
 | Logs are printed as plain text, not JSON | `LOG_FORMAT` not set to `json` | Set `LOG_FORMAT=json` in `.env` and restart |

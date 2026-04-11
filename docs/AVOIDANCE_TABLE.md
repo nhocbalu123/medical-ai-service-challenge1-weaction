@@ -141,3 +141,108 @@ except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
 ```
 
 **How to verify:** Stop the `db` container while the API is running (`docker stop medical_db`) and call `POST /predict`. The response should be `503` with `{"detail": "Database unavailable; the prediction could not be saved. Please retry later."}` and a `db_error_on_predict` log line at `ERROR` level.
+
+---
+
+## Mistake 9 — FastAPIInstrumentor.instrument_app called inside lifespan — no spans created
+
+**Problem:** `FastAPIInstrumentor.instrument_app(app)` (and `setup_telemetry()`) were called inside the FastAPI `lifespan` async context manager. Starlette compiles the middleware stack **before** the lifespan handler runs — it needs the compiled stack to process the `lifespan` ASGI scope itself. Any middleware added during lifespan startup is inserted into `user_middleware` but never enters the already-frozen compiled stack. The `OpenTelemetryMiddleware` that creates per-request spans was never part of the live request pipeline. Every request returned `NonRecordingSpan` (OTel no-op), the `X-Trace-ID` header was never set, and no traces reached Grafana Tempo.
+
+**Fix:** Moved `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` to **module level** — executed at import time, after `app = FastAPI(...)` but before any ASGI call arrives. The `lifespan` retains only runtime I/O startup work (`init_db`, model warm-up).
+
+```python
+# before — too late; middleware stack already compiled when lifespan runs
+@asynccontextmanager
+async def lifespan(app):
+    configure_logging()
+    setup_telemetry()
+    FastAPIInstrumentor.instrument_app(app)   # no-op — stack already frozen
+    ...
+
+# after — module level, before first ASGI call
+configure_logging()
+setup_telemetry()
+
+app = FastAPI(lifespan=lifespan, ...)
+app.add_middleware(RequestLoggingMiddleware)
+FastAPIInstrumentor.instrument_app(app)       # included in initial stack compile
+```
+
+**How to verify:** `curl -si -X POST http://localhost:8000/predict ... | grep -i x-trace-id` must return a 32-hex-char trace ID. In Grafana → Explore → Tempo, searching by that ID must show the full distributed trace.
+
+**Principle:** Middleware — including OTel instrumentation — must be registered **before** the first ASGI call. Starlette compiles the middleware stack once (to handle the `lifespan` scope itself) and does not recompile mid-flight. Use `lifespan` only for I/O startup (DB pool, model warm-up), never for framework-level wiring.
+
+---
+
+## Mistake 10 — Tempo volume mounted at /tmp/tempo causes write-permission failure
+
+**Problem:** `docker-compose.yml` mounted the `tempo_data` named volume at `/tmp/tempo`, and `tempo.yaml` pointed storage paths at `/tmp/tempo/blocks` and `/tmp/tempo/wal`. `grafana/tempo:2.5.0` runs as a non-root user (`tempo`, UID 10001). Docker initialises a named volume with the ownership of the corresponding directory in the image. `/tmp/tempo` does not exist in the Tempo image, so Docker creates the volume root as `root:root 755` — UID 10001 cannot write to it and Tempo fails to start.
+
+This is **not** a Windows Docker Desktop-specific issue. The same failure occurs on Linux and macOS because the volume filesystem follows standard Linux ownership semantics regardless of the host OS. Running Tempo as root (`user: "0"` in the compose file) would unblock it but is unnecessary — the correct fix is to use the path the image already owns.
+
+**Fix:** Changed the volume mount and storage configuration to `/var/tempo`, which the Tempo 2.5.0 image initialises as `tempo:tempo` (UID/GID 10001). No privilege escalation is needed.
+
+```yaml
+# docker-compose.yml — before
+- tempo_data:/tmp/tempo
+
+# docker-compose.yml — after
+- tempo_data:/var/tempo
+```
+
+```yaml
+# tempo.yaml — before
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/blocks
+    wal:
+      path: /tmp/tempo/wal
+
+# tempo.yaml — after
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+```
+
+**Principle:** When using a non-root container image, mount named volumes to paths the image already owns (check the image's Dockerfile or release notes). Never use `/tmp/...` as a persistent volume mount point — it bypasses image-configured ownership and creates root-owned volume roots.
+
+---
+
+## Mistake 11 — `http_requests_total` missing from Prometheus because OTel FastAPI instrumentation doesn't create it
+
+**Problem:** After migrating from `prometheus-fastapi-instrumentator` to OpenTelemetry (4.0.0), querying `http_requests_total` or `rate(http_requests_total[1m])` in Prometheus returned no results — no error, just silence. The CHANGELOG 4.0.0 breaking changes noted that "HTTP metric names changed to OTel semantic convention names", but the PromQL examples in the RUNBOOK still referenced `http_requests_total`, making the omission non-obvious.
+
+The root cause: `opentelemetry-instrumentation-fastapi` auto-instruments the app with a histogram named `http.server.request.duration` (OTel semantic conventions), which Prometheus exposes as `http_server_request_duration_seconds_*`. It does **not** create any metric named `http_requests_total`. Prometheus silently returns no data for a metric that doesn't exist — it does not warn that the metric name is unknown.
+
+An additional bug was present in the RUNBOOK PromQL example for error rate:
+```promql
+# wrong — label name is status_code, not status
+rate(http_requests_total{status=~"[45].."}[1m])
+```
+
+**Fix:** Added an explicit `prometheus_client.Counter` in `RequestLoggingMiddleware`, which already intercepts every HTTP request:
+
+```python
+HTTP_REQUESTS_TOTAL = Counter(
+    "http_requests_total",
+    "Total number of HTTP requests received",
+    ["method", "path", "status_code"],
+)
+
+# inside dispatch, after response is received:
+HTTP_REQUESTS_TOTAL.labels(
+    method=request.method,
+    path=request.url.path,
+    status_code=response.status_code,
+).inc()
+```
+
+**How to verify:** After rebuilding and making at least one request (`curl http://localhost:8000/health`), open Prometheus at `http://localhost:9090` and query `http_requests_total` — results appear immediately. `rate(http_requests_total[1m])` works for rate-of-requests. Use `{status_code=~"4..|5.."}` (not `{status=~"..."}`) to filter by error codes.
+
+**Principle:** When switching metric libraries, audit every PromQL query in runbooks, dashboards, and alerting rules. Prometheus does not warn on unknown metric names — a typo or renamed metric silently returns an empty result set that looks identical to "no traffic yet".

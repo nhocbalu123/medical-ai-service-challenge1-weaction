@@ -16,11 +16,18 @@ import time
 
 import structlog
 from opentelemetry import trace
+from prometheus_client import Counter
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
 logger = structlog.get_logger(__name__)
+
+HTTP_REQUESTS_TOTAL = Counter(
+    "http_requests_total",
+    "Total number of HTTP requests received",
+    ["method", "path", "status_code"],
+)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -41,6 +48,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             raise
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
+
+        HTTP_REQUESTS_TOTAL.labels(
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+        ).inc()
 
         span = trace.get_current_span()
         ctx = span.get_span_context()

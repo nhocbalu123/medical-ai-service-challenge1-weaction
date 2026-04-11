@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`http_requests_total` missing from Prometheus — OTel FastAPI instrumentation does not produce this metric.** Querying `http_requests_total` or `rate(http_requests_total[1m])` in Prometheus returned no results because `opentelemetry-instrumentation-fastapi` generates histogram metrics under OTel semantic convention names (e.g. `http_server_request_duration_seconds_*`), not a counter named `http_requests_total`. The metric simply did not exist in the registry.
+  - `app/middleware/logging.py`: Added an explicit `prometheus_client.Counter` named `http_requests_total` with labels `method`, `path`, and `status_code`. The counter is incremented on every HTTP response inside `RequestLoggingMiddleware.dispatch`, which already intercepts every request.
+  - `docs/RUNBOOK.md`: Fixed the error-rate PromQL query — label name corrected from `status` to `status_code` to match the counter definition.
+  - `docs/AVOIDANCE_TABLE.md`: Mistake 11 added.
+  - Note: this partially reverts the 4.0.0 breaking change that removed `http_requests_total`; dashboards and alerting rules that target that metric name are valid again.
+
 - **`POST /predict` DB error handler broadened to cover connection failures.** The original `except asyncpg.PostgresError` clause only caught server-acknowledged errors (constraint violations, syntax errors, etc.). When the database is actually *unreachable*, asyncpg raises `asyncpg.InterfaceError` (pool/connection errors) or a low-level `OSError` / `ConnectionRefusedError` — neither of which inherits from `PostgresError`. These escaped the handler entirely, producing an unstructured `500` instead of the documented `503`.
   - `app/routers/api.py`: except clause broadened to `(asyncpg.PostgresError, asyncpg.InterfaceError, OSError)`.
   - `app/services/core.py`: docstring updated to accurately document that model errors are suppressed while database errors propagate to the caller.
@@ -21,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`docker/docker-compose.yml` Compose-level default for `OTEL_EXPORTER_OTLP_ENDPOINT` still contained `/v1/traces`.** The previous fix updated `telemetry.py`, `.env.example`, and `README.md` but left the Compose inline default as `http://tempo:4318/v1/traces`. Because Docker Compose injects this value before `os.environ.setdefault` in `telemetry.py` can run, the env var was already set to the full signal URL. The SDK then appended `/v1/traces` a second time, producing `http://tempo:4318/v1/traces/v1/traces` — all traces silently 404'd.
   - `docker/docker-compose.yml`: Compose default changed from `http://tempo:4318/v1/traces` to `http://tempo:4318`.
+
+- **`X-Trace-ID` header absent from all responses; no traces reaching Grafana Tempo.** `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` were called inside the FastAPI `lifespan` context manager. Starlette compiles the middleware stack before the lifespan handler runs (it needs the compiled stack to process the `lifespan` ASGI scope itself), so the `OpenTelemetryMiddleware` was inserted into `user_middleware` after the stack was already frozen — it never participated in the live request pipeline. Every request returned a `NonRecordingSpan` (OTel no-op); `X-Trace-ID` was never set.
+  - `app/main.py`: `configure_logging()` and `setup_telemetry()` moved to module level (before `app = FastAPI(...)`); `FastAPIInstrumentor.instrument_app(app)` moved to module level (after `app.add_middleware(...)`, before `app.mount()`). `lifespan` now contains only runtime I/O startup (`init_db`, model warm-up).
+  - `docs/AVOIDANCE_TABLE.md`: Mistake 9 added (previous Mistake 9 renumbered to 10).
+  - `docs/RUNBOOK.md`: `X-Trace-ID` troubleshooting row updated with accurate cause and fix.
+
+- **Tempo named volume mounted at wrong path caused write-permission failure on startup.** `docker-compose.yml` mounted `tempo_data` at `/tmp/tempo` and `tempo.yaml` pointed storage paths at `/tmp/tempo/blocks` and `/tmp/tempo/wal`. `grafana/tempo:2.5.0` runs as a non-root user (`tempo`, UID 10001). Docker initialises a named volume with the ownership of the corresponding directory inside the image; `/tmp/tempo` does not exist in the Tempo image, so the volume root was created as `root:root 755`. UID 10001 had no write access and Tempo failed to start.
+  - `docker/docker-compose.yml`: volume mount changed from `tempo_data:/tmp/tempo` to `tempo_data:/var/tempo` (the path the image pre-owns as `tempo:tempo`).
+  - `docker/tempo.yaml`: storage paths updated from `/tmp/tempo/blocks` → `/var/tempo/blocks` and `/tmp/tempo/wal` → `/var/tempo/wal`.
+  - `docs/AVOIDANCE_TABLE.md`: Mistake 9 added documenting root cause and the principle of always mounting volumes to paths the image already owns.
+  - `docs/RUNBOOK.md`: troubleshooting row added for `medical_tempo exits immediately on start`.
 
 ---
 

@@ -11,12 +11,16 @@ from app.middleware.logging import RequestLoggingMiddleware
 from app.routers import api
 from app.services import core
 
+# Must run at module level — before the ASGI server builds the middleware stack.
+# Calling these inside `lifespan` is too late: Starlette compiles the middleware
+# stack to process the lifespan scope itself, so any middleware added during
+# lifespan startup is never inserted into the live request pipeline.
+configure_logging()
+setup_telemetry()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging()
-    setup_telemetry()
-    FastAPIInstrumentor.instrument_app(app)
     await core.init_db()
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, core.get_classifier)
@@ -42,6 +46,11 @@ from patient symptom descriptions. All predictions are saved to PostgreSQL for t
 
 # ── Middleware (outermost first) ─────────────────────────────────────────────
 app.add_middleware(RequestLoggingMiddleware)
+
+# ── OTel FastAPI instrumentation ─────────────────────────────────────────────
+# Must be called at module level (after app + middleware are registered) so the
+# OpenTelemetryMiddleware is part of the initial middleware stack compilation.
+FastAPIInstrumentor.instrument_app(app)
 
 # ── Prometheus /metrics endpoint ─────────────────────────────────────────────
 # PrometheusMetricReader (wired in telemetry.py) bridges OTel metrics into the
