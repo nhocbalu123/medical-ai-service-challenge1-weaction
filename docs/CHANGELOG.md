@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `app/core/telemetry.py`: replaced `os.getenv(...)` + `OTLPSpanExporter(endpoint=...)` with `os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318")` and `OTLPSpanExporter()` (no arguments) so the SDK owns path construction.
   - `.env.example`, `.env`, `README.md`: `OTEL_EXPORTER_OTLP_ENDPOINT` example value updated from `http://tempo:4318/v1/traces` to the correct base URL `http://tempo:4318`.
 
+- **`docker/docker-compose.yml` Compose-level default for `OTEL_EXPORTER_OTLP_ENDPOINT` still contained `/v1/traces`.** The previous fix updated `telemetry.py`, `.env.example`, and `README.md` but left the Compose inline default as `http://tempo:4318/v1/traces`. Because Docker Compose injects this value before `os.environ.setdefault` in `telemetry.py` can run, the env var was already set to the full signal URL. The SDK then appended `/v1/traces` a second time, producing `http://tempo:4318/v1/traces/v1/traces` — all traces silently 404'd.
+  - `docker/docker-compose.yml`: Compose default changed from `http://tempo:4318/v1/traces` to `http://tempo:4318`.
+
 ---
 
 ## [4.0.0] - 2026-04-10
