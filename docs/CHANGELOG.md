@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [4.0.1] - 2026-04-11
+
 ### Fixed
 
 - **`http_requests_total` missing from Prometheus — OTel FastAPI instrumentation does not produce this metric.** Querying `http_requests_total` or `rate(http_requests_total[1m])` in Prometheus returned no results because `opentelemetry-instrumentation-fastapi` generates histogram metrics under OTel semantic convention names (e.g. `http_server_request_duration_seconds_*`), not a counter named `http_requests_total`. The metric simply did not exist in the registry.

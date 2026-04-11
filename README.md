@@ -187,7 +187,7 @@ Copy `.env.example` to `.env` and fill in the required values before running.
 | `POSTGRES_HOST` | no | `db` | PostgreSQL hostname (`db` inside Compose network) |
 | `POSTGRES_PORT` | no | `5432` | PostgreSQL port |
 | `DATABASE_URL` | no | *(built from above)* | Full Postgres DSN; overrides `POSTGRES_*` vars when set |
-| `MODEL_NAME` | no | `facebook/bart-large-mnli` | HuggingFace model ID |
+| `MODEL_NAME` | no | `facebook/bart-large-mnli` | HuggingFace model ID (requires Docker image rebuild if changed) |
 | `MODEL_VERSION` | no | `1.0.0` | Version string surfaced in prediction responses |
 | `LOG_FORMAT` | no | `json` | Log output format: `json` (machine-readable) or `console` (human-readable) |
 | `LOG_LEVEL` | no | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
@@ -197,8 +197,8 @@ Copy `.env.example` to `.env` and fill in the required values before running.
 | `GRAFANA_USER` | no | `admin` | Grafana admin username (local demo stack only) |
 | `GRAFANA_PASSWORD` | no | `admin` | Grafana admin password (local demo stack only) |
 | `OTEL_SERVICE_NAME` | no | `medical-ai-service` | Service name reported in traces and metrics |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | `http://tempo:4318` | OTLP/HTTP **base URL** for trace export — the SDK auto-appends `/v1/traces`; use `http://localhost:4318` outside Compose |
-| `OTEL_RESOURCE_ATTRIBUTES` | no | `deployment.environment=dev` | Extra resource attributes attached to every span and metric |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | `http://tempo:4318` | OTLP/HTTP **base URL** for trace export (SDK auto-appends `/v1/traces`); use `http://localhost:4318` outside Docker Compose |
+| `OTEL_RESOURCE_ATTRIBUTES` | no | `deployment.environment=dev` | Extra resource attributes (key=value pairs) attached to every span and metric |
 
 > The service **refuses to start** if neither `DATABASE_URL` nor `POSTGRES_PASSWORD` is set.
 >

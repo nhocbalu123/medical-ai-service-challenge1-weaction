@@ -65,6 +65,31 @@ curl -X POST http://localhost:8000/predict \
   }'
 ```
 
+Response:
+```json
+{
+  "record_id": 1,
+  "patient_id": "P-042",
+  "symptoms": "Patient complains of burning sensation during urination, frequent urge to urinate, lower abdominal pain",
+  "top_condition": "Urinary Tract Infection",
+  "confidence": 0.85,
+  "all_predictions": [
+    {
+      "label": "Urinary Tract Infection",
+      "score": 0.85
+    },
+    {
+      "label": "Kidney Stones",
+      "score": 0.12
+    }
+  ],
+  "model_version": "1.0.0",
+  "is_fallback": false,
+  "fallback_message": null,
+  "created_at": "2026-04-11T12:00:00.000Z"
+}
+```
+
 ### POST /predict — fallback response (model unavailable)
 
 When the model is unavailable the API still returns `201`. Check `is_fallback`:
@@ -118,7 +143,8 @@ http://localhost:8000/docs
 ## 3. DB Schema
 
 ```sql
-CREATE TABLE predictions (
+-- Initial table creation
+CREATE TABLE IF NOT EXISTS predictions (
     id              SERIAL PRIMARY KEY,
     patient_id      VARCHAR(64) NOT NULL,
     symptoms        TEXT NOT NULL,
@@ -126,11 +152,14 @@ CREATE TABLE predictions (
     confidence      FLOAT,
     all_predictions JSONB,
     model_version   VARCHAR(32),
-    age             SMALLINT,
-    notes           TEXT,
-    is_fallback     BOOLEAN DEFAULT FALSE,  -- TRUE when model was unavailable or all retries failed
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration for columns added later
+ALTER TABLE predictions
+    ADD COLUMN IF NOT EXISTS age         SMALLINT,
+    ADD COLUMN IF NOT EXISTS notes       TEXT,
+    ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN DEFAULT FALSE;
 ```
 
 To find all fallback records (where the model could not classify):
@@ -216,10 +245,9 @@ Set `LOG_FORMAT=console` in `.env` for human-readable output during local develo
 ```bash
 # Raw metrics endpoint
 curl http://localhost:8000/metrics
-
-# Open Prometheus UI at
-open http://localhost:9090
 ```
+
+Open **Prometheus UI** at http://localhost:9090.
 
 Useful PromQL queries:
 
@@ -242,11 +270,14 @@ process_cpu_percent
 
 > **Note:** `http_requests_total` carries three labels: `method`, `path`, and `status_code`. Use `{status_code=~"..."}` (not `{status=~"..."}`) when filtering by response code.
 
-### Grafana Dashboards
+### Grafana Dashboards & Distributed Traces (Tempo)
 
-Open Grafana at http://localhost:3000 (default credentials: `admin` / `admin`).
+**UI Access:**
+- **Grafana**: http://localhost:3000 (default credentials: `admin` / `admin`)
+- **Tempo UI / Query**: http://localhost:3200
+- **Prometheus UI**: http://localhost:9090
 
-Both the **Prometheus** and **Tempo** datasources are pre-provisioned automatically.
+Both the **Prometheus** and **Tempo** datasources are pre-provisioned automatically in Grafana.
 
 To build a metrics dashboard:
 1. Click **+** → **New Dashboard** → **Add visualization**
