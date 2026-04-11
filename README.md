@@ -1,4 +1,5 @@
 # 🏥 Medical Symptom Classifier API
+
 ### `medical-ai-service-challenge1-weaction`
 
 A production-ready **FastAPI** standalone backend service, built as a monolith, organized in a layered architecture, that wraps a HuggingFace zero-shot classification model to predict likely medical conditions from free-text symptom descriptions. All predictions are persisted to **PostgreSQL** for tracking and audit.
@@ -103,21 +104,29 @@ All log output is **structured JSON** by default (set `LOG_FORMAT=console` for h
 Every HTTP request automatically emits a log line with `trace_id`, `span_id`, `method`, `path`, `status_code`, and `duration_ms`. The `X-Trace-ID` response header carries the same hex trace ID so callers can correlate logs with distributed traces in Grafana Tempo.
 
 ```json
-{"timestamp": "2026-04-08T10:00:00Z", "level": "info", "event": "request_completed",
- "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "span_id": "00f067aa0ba902b7",
- "method": "POST", "path": "/predict", "status_code": 201, "duration_ms": 312.5}
+{
+    "timestamp": "2026-04-08T10:00:00Z",
+    "level": "info",
+    "event": "request_completed",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "00f067aa0ba902b7",
+    "method": "POST",
+    "path": "/predict",
+    "status_code": 201,
+    "duration_ms": 312.5
+}
 ```
 
 ### Metrics (`/metrics`)
 
 Prometheus-format metrics are exposed at `GET /metrics`. Key metrics:
 
-| Metric | Description |
-|--------|-------------|
-| `http_requests_total` | Request count by method, path, and status code |
-| `http_request_duration_seconds` | Request latency histogram |
-| `process_cpu_percent` | Current process CPU % |
-| `process_rss_bytes` | Current process RSS memory in bytes |
+| Metric                          | Description                                    |
+| ------------------------------- | ---------------------------------------------- |
+| `http_requests_total`           | Request count by method, path, and status code |
+| `http_request_duration_seconds` | Request latency histogram                      |
+| `process_cpu_percent`           | Current process CPU %                          |
+| `process_rss_bytes`             | Current process RSS memory in bytes            |
 
 ### Local Observability Demo
 
@@ -138,6 +147,7 @@ Grafana starts with both the Prometheus and Tempo datasources pre-provisioned. B
 Each inference call is traced as a **Langfuse generation** with the model name, input symptoms, top predicted condition, and latency. Tracing is opt-in and disabled when `LANGFUSE_PUBLIC_KEY` is not set.
 
 To enable:
+
 1. Sign up at [cloud.langfuse.com](https://cloud.langfuse.com) (free tier available) or self-host Langfuse.
 2. Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and optionally `LANGFUSE_HOST` in your `.env`.
 3. Restart the service — traces appear in the Langfuse dashboard immediately.
@@ -146,12 +156,12 @@ To enable:
 
 ## 🔌 API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/predict` | Submit symptoms → get AI prediction + saved to DB. Returns `201` when the model is unavailable (check `is_fallback`); returns `503` only when the database is unreachable. |
-| `GET`  | `/predict/{id}` | Retrieve a saved prediction by record ID |
-| `GET`  | `/health` | Live status of API, DB, and model |
-| `GET`  | `/metrics` | Prometheus metrics endpoint |
+| Method | Path            | Description                                                                                                                                                                |
+| ------ | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/predict`      | Submit symptoms → get AI prediction + saved to DB. Returns `201` when the model is unavailable (check `is_fallback`); returns `503` only when the database is unreachable. |
+| `GET`  | `/predict/{id}` | Retrieve a saved prediction by record ID                                                                                                                                   |
+| `GET`  | `/health`       | Live status of API, DB, and model                                                                                                                                          |
+| `GET`  | `/metrics`      | Prometheus metrics endpoint                                                                                                                                                |
 
 ### Fallback behaviour
 
@@ -159,11 +169,11 @@ To enable:
 
 ```json
 {
-  "is_fallback": true,
-  "top_condition": "unclassifiable",
-  "confidence": 0.0,
-  "all_predictions": [],
-  "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
+    "is_fallback": true,
+    "top_condition": "unclassifiable",
+    "confidence": 0.0,
+    "all_predictions": [],
+    "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
 }
 ```
 
@@ -179,26 +189,26 @@ Full interactive docs: **`http://localhost:8000/docs`**
 
 Copy `.env.example` to `.env` and fill in the required values before running.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `POSTGRES_PASSWORD` | **yes** | — | Password for the PostgreSQL `postgres` user |
-| `POSTGRES_DB` | no | `medicaldb` | PostgreSQL database name |
-| `POSTGRES_USER` | no | `postgres` | PostgreSQL user |
-| `POSTGRES_HOST` | no | `db` | PostgreSQL hostname (`db` inside Compose network) |
-| `POSTGRES_PORT` | no | `5432` | PostgreSQL port |
-| `DATABASE_URL` | no | *(built from above)* | Full Postgres DSN; overrides `POSTGRES_*` vars when set |
-| `MODEL_NAME` | no | `facebook/bart-large-mnli` | HuggingFace model ID (requires Docker image rebuild if changed) |
-| `MODEL_VERSION` | no | `1.0.0` | Version string surfaced in prediction responses |
-| `LOG_FORMAT` | no | `json` | Log output format: `json` (machine-readable) or `console` (human-readable) |
-| `LOG_LEVEL` | no | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `LANGFUSE_PUBLIC_KEY` | no | — | Langfuse public key; tracing disabled when not set |
-| `LANGFUSE_SECRET_KEY` | no | — | Langfuse secret key |
-| `LANGFUSE_HOST` | no | — | Langfuse host URL; omit for cloud.langfuse.com |
-| `GRAFANA_USER` | no | `admin` | Grafana admin username (local demo stack only) |
-| `GRAFANA_PASSWORD` | no | `admin` | Grafana admin password (local demo stack only) |
-| `OTEL_SERVICE_NAME` | no | `medical-ai-service` | Service name reported in traces and metrics |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | `http://tempo:4318` | OTLP/HTTP **base URL** for trace export (SDK auto-appends `/v1/traces`); use `http://localhost:4318` outside Docker Compose |
-| `OTEL_RESOURCE_ATTRIBUTES` | no | `deployment.environment=dev` | Extra resource attributes (key=value pairs) attached to every span and metric |
+| Variable                      | Required | Default                      | Description                                                                                                                 |
+| ----------------------------- | -------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `POSTGRES_PASSWORD`           | **yes**  | —                            | Password for the PostgreSQL `postgres` user                                                                                 |
+| `POSTGRES_DB`                 | no       | `medicaldb`                  | PostgreSQL database name                                                                                                    |
+| `POSTGRES_USER`               | no       | `postgres`                   | PostgreSQL user                                                                                                             |
+| `POSTGRES_HOST`               | no       | `db`                         | PostgreSQL hostname (`db` inside Compose network)                                                                           |
+| `POSTGRES_PORT`               | no       | `5432`                       | PostgreSQL port                                                                                                             |
+| `DATABASE_URL`                | no       | _(built from above)_         | Full Postgres DSN; overrides `POSTGRES_*` vars when set                                                                     |
+| `MODEL_NAME`                  | no       | `facebook/bart-large-mnli`   | HuggingFace model ID (requires Docker image rebuild if changed)                                                             |
+| `MODEL_VERSION`               | no       | `1.0.0`                      | Version string surfaced in prediction responses                                                                             |
+| `LOG_FORMAT`                  | no       | `json`                       | Log output format: `json` (machine-readable) or `console` (human-readable)                                                  |
+| `LOG_LEVEL`                   | no       | `INFO`                       | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`                                                                          |
+| `LANGFUSE_PUBLIC_KEY`         | no       | —                            | Langfuse public key; tracing disabled when not set                                                                          |
+| `LANGFUSE_SECRET_KEY`         | no       | —                            | Langfuse secret key                                                                                                         |
+| `LANGFUSE_HOST`               | no       | —                            | Langfuse host URL; omit for cloud.langfuse.com                                                                              |
+| `GRAFANA_USER`                | no       | `admin`                      | Grafana admin username (local demo stack only)                                                                              |
+| `GRAFANA_PASSWORD`            | no       | `admin`                      | Grafana admin password (local demo stack only)                                                                              |
+| `OTEL_SERVICE_NAME`           | no       | `medical-ai-service`         | Service name reported in traces and metrics                                                                                 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no       | `http://tempo:4318`          | OTLP/HTTP **base URL** for trace export (SDK auto-appends `/v1/traces`); use `http://localhost:4318` outside Docker Compose |
+| `OTEL_RESOURCE_ATTRIBUTES`    | no       | `deployment.environment=dev` | Extra resource attributes (key=value pairs) attached to every span and metric                                               |
 
 > The service **refuses to start** if neither `DATABASE_URL` nor `POSTGRES_PASSWORD` is set.
 >

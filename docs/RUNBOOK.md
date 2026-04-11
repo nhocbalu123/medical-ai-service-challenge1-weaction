@@ -9,6 +9,7 @@ This repository is a standalone backend service, built as a monolith, organized 
 ## 1. Running the Service
 
 ### Prerequisites
+
 - Docker Desktop (or Docker Engine + Compose plugin)
 - 4 GB RAM minimum (for HuggingFace model)
 - ~3 GB free disk space (model weights are baked into the image at build time)
@@ -48,12 +49,14 @@ docker compose -f docker/docker-compose.yml down --volumes  # WARNING: deletes d
 ## 2. Testing the Endpoints
 
 ### Health check
+
 ```bash
 curl http://localhost:8000/health
 # {"status":"ok","db":"healthy","model":"loaded","version":"1.0.0"}
 ```
 
 ### POST /predict — valid input
+
 ```bash
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
@@ -66,27 +69,28 @@ curl -X POST http://localhost:8000/predict \
 ```
 
 Response:
+
 ```json
 {
-  "record_id": 1,
-  "patient_id": "P-042",
-  "symptoms": "Patient complains of burning sensation during urination, frequent urge to urinate, lower abdominal pain",
-  "top_condition": "Urinary Tract Infection",
-  "confidence": 0.85,
-  "all_predictions": [
-    {
-      "label": "Urinary Tract Infection",
-      "score": 0.85
-    },
-    {
-      "label": "Kidney Stones",
-      "score": 0.12
-    }
-  ],
-  "model_version": "1.0.0",
-  "is_fallback": false,
-  "fallback_message": null,
-  "created_at": "2026-04-11T12:00:00.000Z"
+    "record_id": 1,
+    "patient_id": "P-042",
+    "symptoms": "Patient complains of burning sensation during urination, frequent urge to urinate, lower abdominal pain",
+    "top_condition": "Urinary Tract Infection",
+    "confidence": 0.85,
+    "all_predictions": [
+        {
+            "label": "Urinary Tract Infection",
+            "score": 0.85
+        },
+        {
+            "label": "Kidney Stones",
+            "score": 0.12
+        }
+    ],
+    "model_version": "1.0.0",
+    "is_fallback": false,
+    "fallback_message": null,
+    "created_at": "2026-04-11T12:00:00.000Z"
 }
 ```
 
@@ -108,6 +112,7 @@ When the model is unavailable the API still returns `201`. Check `is_fallback`:
 ```
 
 ### POST /predict — bad input → 422
+
 ```bash
 # symptoms too short
 curl -X POST http://localhost:8000/predict \
@@ -129,11 +134,13 @@ curl -X POST http://localhost:8000/predict \
 ```
 
 ### GET /predict/{id} — fetch saved result
+
 ```bash
 curl http://localhost:8000/predict/1
 ```
 
 ### Swagger UI
+
 ```
 http://localhost:8000/docs
 ```
@@ -180,11 +187,11 @@ When the HuggingFace model cannot classify (model failed to load, or inference f
 
 ```json
 {
-  "is_fallback": true,
-  "top_condition": "unclassifiable",
-  "confidence": 0.0,
-  "all_predictions": [],
-  "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
+    "is_fallback": true,
+    "top_condition": "unclassifiable",
+    "confidence": 0.0,
+    "all_predictions": [],
+    "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
 }
 ```
 
@@ -198,7 +205,7 @@ When the database is unreachable, `POST /predict` returns `503 Service Unavailab
 
 ```json
 {
-  "detail": "Database unavailable; the prediction could not be saved. Please retry later."
+    "detail": "Database unavailable; the prediction could not be saved. Please retry later."
 }
 ```
 
@@ -231,9 +238,17 @@ docker logs medical_api | jq 'select(.level == "error")'
 Each request emits a log line with these fields:
 
 ```json
-{"timestamp": "2026-04-08T10:00:00Z", "level": "info", "event": "request_completed",
- "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "span_id": "00f067aa0ba902b7",
- "method": "POST", "path": "/predict", "status_code": 201, "duration_ms": 312.5}
+{
+    "timestamp": "2026-04-08T10:00:00Z",
+    "level": "info",
+    "event": "request_completed",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "00f067aa0ba902b7",
+    "method": "POST",
+    "path": "/predict",
+    "status_code": 201,
+    "duration_ms": 312.5
+}
 ```
 
 The `X-Trace-ID` response header carries the same hex trace ID so callers can correlate logs with distributed traces in Grafana Tempo.
@@ -273,6 +288,7 @@ process_cpu_percent
 ### Grafana Dashboards & Distributed Traces (Tempo)
 
 **UI Access:**
+
 - **Grafana**: http://localhost:3000 (default credentials: `admin` / `admin`)
 - **Tempo UI / Query**: http://localhost:3200
 - **Prometheus UI**: http://localhost:9090
@@ -280,11 +296,13 @@ process_cpu_percent
 Both the **Prometheus** and **Tempo** datasources are pre-provisioned automatically in Grafana.
 
 To build a metrics dashboard:
+
 1. Click **+** → **New Dashboard** → **Add visualization**
 2. Select the **Prometheus** datasource
 3. Enter a PromQL query (e.g. `rate(http_requests_total[1m])`)
 
 To explore distributed traces:
+
 1. Click **Explore** (compass icon in the left sidebar)
 2. Select the **Tempo** datasource
 3. Search by **Trace ID** (copy the `X-Trace-ID` response header or `trace_id` log field) or browse recent traces via **Search**
@@ -302,21 +320,21 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 
 ## 6. Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `api` container unhealthy | Service not ready yet | Wait 30–60 s, check `docker logs medical_api` |
-| `medical_db is unhealthy` + warning `POSTGRES_PASSWORD variable is not set` | Docker Compose v2 reads `.env` from the project directory, which defaults to the folder of the `-f` file (`docker/`) — not the repo root | Ensure `docker-compose.yml` has `env_file: - ../.env` on both services (already fixed); alternatively run with `--env-file .env` |
-| `/predict` returns `is_fallback: true` | Model unavailable or inference keeps failing | Check `/health` → `"model": "unavailable"` confirms load failure; filter logs: `docker logs medical_api \| jq 'select(.event == "model_load_failed")'`. For transient inference errors filter for `inference_failed`. |
-| `/predict` returns `503` | Database unreachable at request time | Check `/health` → `"db": "unreachable"`; filter logs for `db_error_on_predict`. Verify `medical_db` is running (`docker ps`) and wait for `(healthy)`. |
-| `docker build` fails at model download step | No internet access during build | Build requires internet access once to fetch `facebook/bart-large-mnli` (~1.6 GB) |
-| `db` connection refused | Postgres not ready | `docker ps` → wait for `(healthy)` on `medical_db` |
-| 422 on valid-looking input | `symptoms` < 10 chars | Minimum 10 characters required |
-| Port 8000 already in use | Another service on port | `lsof -i :8000`, kill it, or change port in compose |
-| `http_requests_total` query returns no results in Prometheus | Metric was not defined — OTel FastAPI instrumentation generates histograms with OTel-convention names, not this counter | Fixed: `RequestLoggingMiddleware` now increments an explicit `prometheus_client.Counter`. Make at least one request to the API first; the counter appears only after the first increment. Use `{status_code=~"4..|5.."}` (not `status=~`) to filter by response code. |
-| `GET /metrics` returns 404 | `/metrics` route not mounted | Verify `app.mount("/metrics", make_metrics_app())` is present in `main.py` and `setup_telemetry()` was called first |
-| `X-Trace-ID` header missing from response | OTel span not active — `instrument_app` called inside `lifespan` too late | `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` must be at **module level** in `main.py`, not inside `lifespan`. Starlette freezes the middleware stack before lifespan runs; anything added inside lifespan is never part of the live pipeline. |
-| `medical_tempo` exits immediately on start | Named volume owned by root; Tempo UID 10001 has no write access | Volume must mount to `/var/tempo` (not `/tmp/tempo`) — the path the Tempo 2.5.0 image pre-owns as `tempo:tempo`. Confirm `docker-compose.yml` has `tempo_data:/var/tempo` and `tempo.yaml` uses `/var/tempo/blocks` and `/var/tempo/wal`. If you have an old `tempo_data` volume from a previous run, destroy it first: `docker volume rm <project>_tempo_data` |
-| Tempo not receiving traces | OTLP endpoint unreachable | Check `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`; must be a base URL — inside Compose use `http://tempo:4318`, outside Compose use `http://localhost:4318` (the SDK appends `/v1/traces` automatically); verify `medical_tempo` container is running |
-| Prometheus shows `medical_api` target as DOWN | DNS resolution fails inside Compose network | Ensure the target in `prometheus.yml` is `api:8000` (the Compose service name), not `localhost:8000` |
-| Logs are printed as plain text, not JSON | `LOG_FORMAT` not set to `json` | Set `LOG_FORMAT=json` in `.env` and restart |
-| Langfuse traces not appearing | Keys missing or wrong host | Verify `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set; check for `langfuse_init_failed` event in logs |
+| Symptom                                                                     | Cause                                                                                                                                    | Fix                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `api` container unhealthy                                                   | Service not ready yet                                                                                                                    | Wait 30–60 s, check `docker logs medical_api`                                                                                                                                                                                                                                                                                                                   |
+| `medical_db is unhealthy` + warning `POSTGRES_PASSWORD variable is not set` | Docker Compose v2 reads `.env` from the project directory, which defaults to the folder of the `-f` file (`docker/`) — not the repo root | Ensure `docker-compose.yml` has `env_file: - ../.env` on both services (already fixed); alternatively run with `--env-file .env`                                                                                                                                                                                                                                |
+| `/predict` returns `is_fallback: true`                                      | Model unavailable or inference keeps failing                                                                                             | Check `/health` → `"model": "unavailable"` confirms load failure; filter logs: `docker logs medical_api \| jq 'select(.event == "model_load_failed")'`. For transient inference errors filter for `inference_failed`.                                                                                                                                           |
+| `/predict` returns `503`                                                    | Database unreachable at request time                                                                                                     | Check `/health` → `"db": "unreachable"`; filter logs for `db_error_on_predict`. Verify `medical_db` is running (`docker ps`) and wait for `(healthy)`.                                                                                                                                                                                                          |
+| `docker build` fails at model download step                                 | No internet access during build                                                                                                          | Build requires internet access once to fetch `facebook/bart-large-mnli` (~1.6 GB)                                                                                                                                                                                                                                                                               |
+| `db` connection refused                                                     | Postgres not ready                                                                                                                       | `docker ps` → wait for `(healthy)` on `medical_db`                                                                                                                                                                                                                                                                                                              |
+| 422 on valid-looking input                                                  | `symptoms` < 10 chars                                                                                                                    | Minimum 10 characters required                                                                                                                                                                                                                                                                                                                                  |
+| Port 8000 already in use                                                    | Another service on port                                                                                                                  | `lsof -i :8000`, kill it, or change port in compose                                                                                                                                                                                                                                                                                                             |
+| `http_requests_total` query returns no results in Prometheus                | Metric was not defined — OTel FastAPI instrumentation generates histograms with OTel-convention names, not this counter                  | Fixed: `RequestLoggingMiddleware` now increments an explicit `prometheus_client.Counter`. Make at least one request to the API first; the counter appears only after the first increment. Use `{status_code=~"4..                                                                                                                                               | 5.."}`(not`status=~`) to filter by response code. |
+| `GET /metrics` returns 404                                                  | `/metrics` route not mounted                                                                                                             | Verify `app.mount("/metrics", make_metrics_app())` is present in `main.py` and `setup_telemetry()` was called first                                                                                                                                                                                                                                             |
+| `X-Trace-ID` header missing from response                                   | OTel span not active — `instrument_app` called inside `lifespan` too late                                                                | `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` must be at **module level** in `main.py`, not inside `lifespan`. Starlette freezes the middleware stack before lifespan runs; anything added inside lifespan is never part of the live pipeline.                                                                      |
+| `medical_tempo` exits immediately on start                                  | Named volume owned by root; Tempo UID 10001 has no write access                                                                          | Volume must mount to `/var/tempo` (not `/tmp/tempo`) — the path the Tempo 2.5.0 image pre-owns as `tempo:tempo`. Confirm `docker-compose.yml` has `tempo_data:/var/tempo` and `tempo.yaml` uses `/var/tempo/blocks` and `/var/tempo/wal`. If you have an old `tempo_data` volume from a previous run, destroy it first: `docker volume rm <project>_tempo_data` |
+| Tempo not receiving traces                                                  | OTLP endpoint unreachable                                                                                                                | Check `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`; must be a base URL — inside Compose use `http://tempo:4318`, outside Compose use `http://localhost:4318` (the SDK appends `/v1/traces` automatically); verify `medical_tempo` container is running                                                                                                               |
+| Prometheus shows `medical_api` target as DOWN                               | DNS resolution fails inside Compose network                                                                                              | Ensure the target in `prometheus.yml` is `api:8000` (the Compose service name), not `localhost:8000`                                                                                                                                                                                                                                                            |
+| Logs are printed as plain text, not JSON                                    | `LOG_FORMAT` not set to `json`                                                                                                           | Set `LOG_FORMAT=json` in `.env` and restart                                                                                                                                                                                                                                                                                                                     |
+| Langfuse traces not appearing                                               | Keys missing or wrong host                                                                                                               | Verify `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set; check for `langfuse_init_failed` event in logs                                                                                                                                                                                                                                                    |

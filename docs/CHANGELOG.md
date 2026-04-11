@@ -16,32 +16,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`http_requests_total` missing from Prometheus — OTel FastAPI instrumentation does not produce this metric.** Querying `http_requests_total` or `rate(http_requests_total[1m])` in Prometheus returned no results because `opentelemetry-instrumentation-fastapi` generates histogram metrics under OTel semantic convention names (e.g. `http_server_request_duration_seconds_*`), not a counter named `http_requests_total`. The metric simply did not exist in the registry.
-  - `app/middleware/logging.py`: Added an explicit `prometheus_client.Counter` named `http_requests_total` with labels `method`, `path`, and `status_code`. The counter is incremented on every HTTP response inside `RequestLoggingMiddleware.dispatch`, which already intercepts every request.
-  - `docs/RUNBOOK.md`: Fixed the error-rate PromQL query — label name corrected from `status` to `status_code` to match the counter definition.
-  - `docs/AVOIDANCE_TABLE.md`: Mistake 11 added.
-  - Note: this partially reverts the 4.0.0 breaking change that removed `http_requests_total`; dashboards and alerting rules that target that metric name are valid again.
+    - `app/middleware/logging.py`: Added an explicit `prometheus_client.Counter` named `http_requests_total` with labels `method`, `path`, and `status_code`. The counter is incremented on every HTTP response inside `RequestLoggingMiddleware.dispatch`, which already intercepts every request.
+    - `docs/RUNBOOK.md`: Fixed the error-rate PromQL query — label name corrected from `status` to `status_code` to match the counter definition.
+    - `docs/AVOIDANCE_TABLE.md`: Mistake 11 added.
+    - Note: this partially reverts the 4.0.0 breaking change that removed `http_requests_total`; dashboards and alerting rules that target that metric name are valid again.
 
-- **`POST /predict` DB error handler broadened to cover connection failures.** The original `except asyncpg.PostgresError` clause only caught server-acknowledged errors (constraint violations, syntax errors, etc.). When the database is actually *unreachable*, asyncpg raises `asyncpg.InterfaceError` (pool/connection errors) or a low-level `OSError` / `ConnectionRefusedError` — neither of which inherits from `PostgresError`. These escaped the handler entirely, producing an unstructured `500` instead of the documented `503`.
-  - `app/routers/api.py`: except clause broadened to `(asyncpg.PostgresError, asyncpg.InterfaceError, OSError)`.
-  - `app/services/core.py`: docstring updated to accurately document that model errors are suppressed while database errors propagate to the caller.
+- **`POST /predict` DB error handler broadened to cover connection failures.** The original `except asyncpg.PostgresError` clause only caught server-acknowledged errors (constraint violations, syntax errors, etc.). When the database is actually _unreachable_, asyncpg raises `asyncpg.InterfaceError` (pool/connection errors) or a low-level `OSError` / `ConnectionRefusedError` — neither of which inherits from `PostgresError`. These escaped the handler entirely, producing an unstructured `500` instead of the documented `503`.
+    - `app/routers/api.py`: except clause broadened to `(asyncpg.PostgresError, asyncpg.InterfaceError, OSError)`.
+    - `app/services/core.py`: docstring updated to accurately document that model errors are suppressed while database errors propagate to the caller.
 
-- **OTel OTLP trace endpoint constructed incorrectly.** `app/core/telemetry.py` read `OTEL_EXPORTER_OTLP_ENDPOINT` manually via `os.getenv` and passed the raw value as `endpoint=` to `OTLPSpanExporter`. Per the OTel spec the env var is a *base URL*; the SDK auto-appends `/v1/traces` only when it reads the var itself. Passing an explicit `endpoint=` argument bypasses that logic, so any user setting the standard base URL (e.g. `http://collector:4318`) would silently send traces to the wrong path.
-  - `app/core/telemetry.py`: replaced `os.getenv(...)` + `OTLPSpanExporter(endpoint=...)` with `os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318")` and `OTLPSpanExporter()` (no arguments) so the SDK owns path construction.
-  - `.env.example`, `.env`, `README.md`: `OTEL_EXPORTER_OTLP_ENDPOINT` example value updated from `http://tempo:4318/v1/traces` to the correct base URL `http://tempo:4318`.
+- **OTel OTLP trace endpoint constructed incorrectly.** `app/core/telemetry.py` read `OTEL_EXPORTER_OTLP_ENDPOINT` manually via `os.getenv` and passed the raw value as `endpoint=` to `OTLPSpanExporter`. Per the OTel spec the env var is a _base URL_; the SDK auto-appends `/v1/traces` only when it reads the var itself. Passing an explicit `endpoint=` argument bypasses that logic, so any user setting the standard base URL (e.g. `http://collector:4318`) would silently send traces to the wrong path.
+    - `app/core/telemetry.py`: replaced `os.getenv(...)` + `OTLPSpanExporter(endpoint=...)` with `os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318")` and `OTLPSpanExporter()` (no arguments) so the SDK owns path construction.
+    - `.env.example`, `.env`, `README.md`: `OTEL_EXPORTER_OTLP_ENDPOINT` example value updated from `http://tempo:4318/v1/traces` to the correct base URL `http://tempo:4318`.
 
 - **`docker/docker-compose.yml` Compose-level default for `OTEL_EXPORTER_OTLP_ENDPOINT` still contained `/v1/traces`.** The previous fix updated `telemetry.py`, `.env.example`, and `README.md` but left the Compose inline default as `http://tempo:4318/v1/traces`. Because Docker Compose injects this value before `os.environ.setdefault` in `telemetry.py` can run, the env var was already set to the full signal URL. The SDK then appended `/v1/traces` a second time, producing `http://tempo:4318/v1/traces/v1/traces` — all traces silently 404'd.
-  - `docker/docker-compose.yml`: Compose default changed from `http://tempo:4318/v1/traces` to `http://tempo:4318`.
+    - `docker/docker-compose.yml`: Compose default changed from `http://tempo:4318/v1/traces` to `http://tempo:4318`.
 
 - **`X-Trace-ID` header absent from all responses; no traces reaching Grafana Tempo.** `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` were called inside the FastAPI `lifespan` context manager. Starlette compiles the middleware stack before the lifespan handler runs (it needs the compiled stack to process the `lifespan` ASGI scope itself), so the `OpenTelemetryMiddleware` was inserted into `user_middleware` after the stack was already frozen — it never participated in the live request pipeline. Every request returned a `NonRecordingSpan` (OTel no-op); `X-Trace-ID` was never set.
-  - `app/main.py`: `configure_logging()` and `setup_telemetry()` moved to module level (before `app = FastAPI(...)`); `FastAPIInstrumentor.instrument_app(app)` moved to module level (after `app.add_middleware(...)`, before `app.mount()`). `lifespan` now contains only runtime I/O startup (`init_db`, model warm-up).
-  - `docs/AVOIDANCE_TABLE.md`: Mistake 9 added (previous Mistake 9 renumbered to 10).
-  - `docs/RUNBOOK.md`: `X-Trace-ID` troubleshooting row updated with accurate cause and fix.
+    - `app/main.py`: `configure_logging()` and `setup_telemetry()` moved to module level (before `app = FastAPI(...)`); `FastAPIInstrumentor.instrument_app(app)` moved to module level (after `app.add_middleware(...)`, before `app.mount()`). `lifespan` now contains only runtime I/O startup (`init_db`, model warm-up).
+    - `docs/AVOIDANCE_TABLE.md`: Mistake 9 added (previous Mistake 9 renumbered to 10).
+    - `docs/RUNBOOK.md`: `X-Trace-ID` troubleshooting row updated with accurate cause and fix.
 
 - **Tempo named volume mounted at wrong path caused write-permission failure on startup.** `docker-compose.yml` mounted `tempo_data` at `/tmp/tempo` and `tempo.yaml` pointed storage paths at `/tmp/tempo/blocks` and `/tmp/tempo/wal`. `grafana/tempo:2.5.0` runs as a non-root user (`tempo`, UID 10001). Docker initialises a named volume with the ownership of the corresponding directory inside the image; `/tmp/tempo` does not exist in the Tempo image, so the volume root was created as `root:root 755`. UID 10001 had no write access and Tempo failed to start.
-  - `docker/docker-compose.yml`: volume mount changed from `tempo_data:/tmp/tempo` to `tempo_data:/var/tempo` (the path the image pre-owns as `tempo:tempo`).
-  - `docker/tempo.yaml`: storage paths updated from `/tmp/tempo/blocks` → `/var/tempo/blocks` and `/tmp/tempo/wal` → `/var/tempo/wal`.
-  - `docs/AVOIDANCE_TABLE.md`: Mistake 9 added documenting root cause and the principle of always mounting volumes to paths the image already owns.
-  - `docs/RUNBOOK.md`: troubleshooting row added for `medical_tempo exits immediately on start`.
+    - `docker/docker-compose.yml`: volume mount changed from `tempo_data:/tmp/tempo` to `tempo_data:/var/tempo` (the path the image pre-owns as `tempo:tempo`).
+    - `docker/tempo.yaml`: storage paths updated from `/tmp/tempo/blocks` → `/var/tempo/blocks` and `/tmp/tempo/wal` → `/var/tempo/wal`.
+    - `docs/AVOIDANCE_TABLE.md`: Mistake 9 added documenting root cause and the principle of always mounting volumes to paths the image already owns.
+    - `docs/RUNBOOK.md`: troubleshooting row added for `medical_tempo exits immediately on start`.
 
 ---
 
@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`app/main.py`**: `prometheus_client.Gauge` + `prometheus-fastapi-instrumentator` replaced by OTel observable gauges + `FastAPIInstrumentor`; `/metrics` endpoint now served via `prometheus_client.make_asgi_app()` mounted on the existing FastAPI app (preserves the same `api:8000/metrics` scrape target used by Prometheus).
 - **`app/middleware/logging.py`**: UUID `request_id` generation removed; `trace_id` and `span_id` are now injected into logs by the structlog processor. `X-Trace-ID` response header replaces `X-Request-ID`, carrying the W3C-compatible hex trace ID.
-- **`docker/docker-compose.yml`**: `api` service now depends on `tempo` (service_started) and receives `OTEL_*` env vars; `tempo_data` named volume added.
+- **`docker/docker-compose.yml`**: `api` service now depends on `tempo` (service*started) and receives `OTEL*\*`env vars;`tempo_data` named volume added.
 
 ### Removed
 
@@ -125,13 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`medical_db` container unhealthy on startup.**  When Docker Compose is
+- **`medical_db` container unhealthy on startup.** When Docker Compose is
   invoked with `-f docker/docker-compose.yml` from the project root, Compose v2
-  sets the *project directory* to `docker/` and therefore looks for `.env` there
-  — not in the project root.  `POSTGRES_PASSWORD` resolved to an empty string,
+  sets the _project directory_ to `docker/` and therefore looks for `.env` there
+  — not in the project root. `POSTGRES_PASSWORD` resolved to an empty string,
   PostgreSQL started without a password, and its `pg_isready` health check failed.
 - Added `env_file: - ../.env` to both `api` and `db` services in
-  `docker/docker-compose.yml`.  Variables are now injected directly into each
+  `docker/docker-compose.yml`. Variables are now injected directly into each
   container by Docker Compose at runtime rather than being interpolated into the
   compose YAML at parse time, so the `.env` discovery path no longer matters.
 - Removed `POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}` from the `db` service
@@ -151,12 +151,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - **`DATABASE_URL` is now required.** The service raises `RuntimeError` at
-  startup if the environment variable is not set.  The former silent fallback
+  startup if the environment variable is not set. The former silent fallback
   `postgresql://postgres:postgres@db:5432/medicaldb` has been removed.
   Copy `.env.example` to `.env` and supply a real password before running.
-- **`POSTGRES_PASSWORD` is now required in `docker-compose.yml`.**  The
+- **`POSTGRES_PASSWORD` is now required in `docker-compose.yml`.** The
   `:-postgres` default has been removed from both the `api` and `db` service
-  environment blocks.  Docker Compose will refuse to start if the variable is
+  environment blocks. Docker Compose will refuse to start if the variable is
   absent from the environment or a `.env` file.
 
 ### Security
@@ -164,7 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed hardcoded `postgres:postgres` credential fallback from
   `app/services/core.py` and `docker/docker-compose.yml` ([#sec-1]).
 - Removed the host-side port mapping `5432:5432` for the `db` service in
-  `docker/docker-compose.yml`.  PostgreSQL is now reachable only from within
+  `docker/docker-compose.yml`. PostgreSQL is now reachable only from within
   the `medical_net` Docker network; it is no longer accessible from the host
   machine or external networks.
 
@@ -175,19 +175,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `on_event` has been deprecated since FastAPI 0.93 and will be removed in a
   future release.
 - Replaced `asyncio.get_event_loop().run_in_executor(...)` with
-  `asyncio.get_running_loop().run_in_executor(...)`.  `get_event_loop()` emits
+  `asyncio.get_running_loop().run_in_executor(...)`. `get_event_loop()` emits
   a `DeprecationWarning` in Python 3.10+ and is scheduled for removal in a
   future Python release.
 
 ### Changed
 
 - Reduced Uvicorn worker count from `--workers 2` to `--workers 1` in
-  `docker/Dockerfile`.  Each worker is a separate process that loads its own
+  `docker/Dockerfile`. Each worker is a separate process that loads its own
   copy of `facebook/bart-large-mnli` (~1.6 GB), so two workers consume ~3.2 GB
   of RAM and risk OOM-killing on standard machines.
 - `all_predictions` in `PredictionResponse` is now typed as
   `list[ConditionScore]` (a new `BaseModel` with `label: str` and
-  `score: float`) instead of the untyped `list[dict]`.  This enables proper
+  `score: float`) instead of the untyped `list[dict]`. This enables proper
   request validation and generates a richer OpenAPI schema.
 - `import json` and `import random` moved from inside functions to the
   top-level import block in `app/services/core.py`.
@@ -198,11 +198,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment variables (`POSTGRES_PASSWORD`, `POSTGRES_DB`, `MODEL_NAME`,
   `MODEL_VERSION`).
 - `tests/` directory with smoke tests covering:
-  - `GET /health` — healthy and degraded-DB states
-  - `POST /predict` — happy path (201), optional-field forwarding, four
-    validation-error cases (short symptoms, blank symptoms, missing
-    `patient_id`, out-of-range age)
-  - `GET /predict/{id}` — found and not-found (404) cases
+    - `GET /health` — healthy and degraded-DB states
+    - `POST /predict` — happy path (201), optional-field forwarding, four
+      validation-error cases (short symptoms, blank symptoms, missing
+      `patient_id`, out-of-range age)
+    - `GET /predict/{id}` — found and not-found (404) cases
 - `tests/conftest.py` bootstrapping `DATABASE_URL` and stubbing native
   dependencies (`asyncpg`, `transformers`, `torch`) so the test suite runs
   without the full ML stack installed.
