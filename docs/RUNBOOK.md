@@ -46,7 +46,62 @@ docker compose -f docker/docker-compose.yml down --volumes  # WARNING: deletes d
 
 ---
 
-## 2. Testing the Endpoints
+## 2. Running the Test Suite
+
+### Install dev dependencies
+
+```bash
+pip install -r requirements-dev.txt
+# Installs: pytest, pytest-cov
+```
+
+### Run all tests
+
+```bash
+# From the repo root — pytest.ini auto-discovers tests/ and measures coverage
+python -m pytest
+```
+
+Expected output (all 27 tests should pass, coverage ≥ 70 %):
+
+```
+tests/test_api.py ...........................          [100%]
+TOTAL    291    57    80%
+Required test coverage of 70% reached. Total coverage: 80.41%
+========================== 27 passed in Xs ===========================
+```
+
+### Run without coverage (faster during development)
+
+```bash
+python -m pytest --no-cov
+```
+
+### Run a single test by name
+
+```bash
+python -m pytest -k test_predict_returns_503_on_db_error -v
+```
+
+### What the tests cover
+
+| Area | Tests |
+|------|-------|
+| `GET /health` | healthy, degraded DB, model unavailable |
+| `POST /predict` | happy path, optional fields, fallback (model unavailable) |
+| `POST /predict` validation | symptoms too short/long, blank, missing `patient_id`, `patient_id` too long, `age` out of range, `notes` too long |
+| `POST /predict` errors | 503 on asyncpg DB error, 503 on `OSError` |
+| `GET /predict/{id}` | found, not found (404), non-integer ID (422), record with `is_fallback=True` |
+| `GET /metrics` | endpoint reachable, Prometheus counter present |
+| Service unit | `classify_symptoms` fallback paths, `check_db_health` success/failure, `_run_inference` retry count |
+
+### Why heavy dependencies are not installed
+
+`conftest.py` stubs `asyncpg`, `transformers`, `torch`, and `opentelemetry.instrumentation.asyncpg` in `sys.modules` before any app module is imported. This lets the test suite run on a plain Python environment without a GPU, model weights, or a running PostgreSQL database. All database and model calls are replaced with `AsyncMock` / `MagicMock` inside individual tests.
+
+---
+
+## 3. Testing the Endpoints (curl)
 
 ### Health check
 
@@ -147,7 +202,7 @@ http://localhost:8000/docs
 
 ---
 
-## 3. DB Schema
+## 4. DB Schema
 
 ```sql
 -- Initial table creation
@@ -177,7 +232,7 @@ SELECT id, patient_id, created_at FROM predictions WHERE is_fallback = TRUE ORDE
 
 ---
 
-## 4. Fallback Behaviour
+## 5. Fallback Behaviour
 
 There are two distinct failure modes with different HTTP outcomes:
 
@@ -215,7 +270,7 @@ The handler catches `asyncpg.PostgresError` (server-side errors), `asyncpg.Inter
 
 ---
 
-## 5. Observability
+## 6. Observability
 
 ### Reading Structured Logs
 
@@ -318,7 +373,7 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom                                                                     | Cause                                                                                                                                    | Fix                                                                                                                                                                                                                                                                                                                                                             |
 | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |

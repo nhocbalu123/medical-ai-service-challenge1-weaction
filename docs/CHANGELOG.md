@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **12 new test cases** in `tests/test_api.py` filling the gaps identified in the coverage audit:
+    - *High severity:* `POST /predict` → 503 on `asyncpg.PostgresError` and `OSError`; `GET /predict/abc` → 422 on non-integer path; `GET /predict/{id}` returns `fallback_message` when the stored record has `is_fallback=True`.
+    - *Medium severity:* `patient_id` > 64 chars → 422; `notes` > 500 chars → 422; `symptoms` > 1000 chars → 422; explicit assertion that `GET /health` returns `model=unavailable` when `get_classifier` returns `None`.
+    - *Low severity:* `GET /metrics` reachable and contains `http_requests_total`; `check_db_health` unit tests for success and silent-failure paths; `_run_inference` retry-count assertion (tenacity calls classifier exactly 3 times before re-raising).
+- **`pytest.ini`** at repo root — configures `testpaths = tests`, enables `--cov=app --cov-report=term-missing`, and enforces a 70 % coverage floor (`--cov-fail-under=70`). Running `python -m pytest` now produces a full coverage report automatically.
+- **`pytest-cov==7.1.0`** added to `requirements-dev.txt`.
+
+### Fixed
+
+- **`tests/conftest.py`**: Added `sys.modules["opentelemetry.instrumentation.asyncpg"] = MagicMock()` stub. When `opentelemetry-instrumentation-asyncpg` is installed in the environment, its `AsyncPGInstrumentor().instrument()` call (executed at module-level in `main.py` via `setup_telemetry()`) used `wrapt` to patch `asyncpg.connection.Connection.execute`. Because `asyncpg` is stubbed as a plain `MagicMock` in the test environment, `wrapt` raised `ModuleNotFoundError: No module named 'asyncpg.connection'; 'asyncpg' is not a package`. The new stub replaces the real instrumentor with a no-op MagicMock so the import chain completes cleanly.
+- **`docs/RUNBOOK.md`**: Added section 2 "Running the Test Suite" documenting `pip install -r requirements-dev.txt`, `python -m pytest`, per-test invocation, and what each area of the suite covers. Existing sections renumbered 3–7.
+
 ---
 
 ## [4.0.1] - 2026-04-11

@@ -246,3 +246,30 @@ HTTP_REQUESTS_TOTAL.labels(
 **How to verify:** After rebuilding and making at least one request (`curl http://localhost:8000/health`), open Prometheus at `http://localhost:9090` and query `http_requests_total` — results appear immediately. `rate(http_requests_total[1m])` works for rate-of-requests. Use `{status_code=~"4..|5.."}` (not `{status=~"..."}`) to filter by error codes.
 
 **Principle:** When switching metric libraries, audit every PromQL query in runbooks, dashboards, and alerting rules. Prometheus does not warn on unknown metric names — a typo or renamed metric silently returns an empty result set that looks identical to "no traffic yet".
+
+---
+
+## Mistake 12 — `AsyncPGInstrumentor` crashes tests when asyncpg is mocked as a plain MagicMock
+
+**Problem:** `conftest.py` stubs `asyncpg` with `sys.modules["asyncpg"] = MagicMock()` so the test suite runs without the real asyncpg package. This works fine as long as `opentelemetry-instrumentation-asyncpg` is *not* installed in the test environment. Once the package is installed (e.g. via `pip install -r requirements.txt`), `setup_telemetry()` runs at import time (module-level in `main.py`) and calls `AsyncPGInstrumentor().instrument()`. Internally that function uses `wrapt.wrap_function_wrapper("asyncpg.connection", "Connection.execute", ...)` to monkey-patch the real asyncpg module. `wrapt` calls `__import__("asyncpg.connection")`, which fails because the stub in `sys.modules` is a flat `MagicMock` object — not a package with sub-modules:
+
+```
+ModuleNotFoundError: No module named 'asyncpg.connection'; 'asyncpg' is not a package
+```
+
+Every test that uses the `client` fixture then errored at setup, not with a helpful message but with a deep traceback through `wrapt`'s internals.
+
+**Why it was not caught earlier:** The original test suite was written when `opentelemetry-instrumentation-asyncpg` was *not* installed in the developer environment. The fixture never triggered the error because the package simply wasn't present.
+
+**Fix:** Add a stub for `opentelemetry.instrumentation.asyncpg` itself *before* `app.main` is imported. This replaces the real instrumentor module with a no-op `MagicMock` so `AsyncPGInstrumentor().instrument()` becomes a harmless mock call:
+
+```python
+# tests/conftest.py — add after the asyncpg/transformers/torch stubs
+sys.modules["opentelemetry.instrumentation.asyncpg"] = MagicMock()
+```
+
+Unlike the `asyncpg` stub (which uses the `if _mod not in sys.modules` guard to avoid double-replacing if the real package happened to load first), this override is applied unconditionally — the goal is always to replace the real instrumentor with the no-op, regardless of whether the package is installed.
+
+**How to verify:** Install `opentelemetry-instrumentation-asyncpg` and run `python -m pytest --no-cov`. All 27 tests should pass without any `ModuleNotFoundError` or `wrapt` traceback.
+
+**Principle:** When a test suite stubs a module with a flat `MagicMock`, also stub any *other* installed package that introspects or monkey-patches that module at import time. Instrumentation libraries (OTel, `wrapt`, `ddtrace`, etc.) that patch the module's internal sub-modules will fail when the stub is a plain object rather than a real package hierarchy.

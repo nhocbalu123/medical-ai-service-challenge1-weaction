@@ -1,9 +1,27 @@
-"""Smoke tests for the /health and /predict endpoints."""
+"""Tests for the /health, /predict, and /metrics endpoints."""
+import sys
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+# ---------------------------------------------------------------------------
+# Fake exception classes used in tests that need asyncpg error types.
+#
+# conftest.py stubs asyncpg with a MagicMock so the module loads without the
+# real package.  Python requires every class listed in an `except` clause to be
+# a real BaseException subclass.  We patch asyncpg.PostgresError /
+# asyncpg.InterfaceError with these real classes for tests that exercise the
+# 503 error path.
+# ---------------------------------------------------------------------------
+class _FakePostgresError(Exception):
+    """Stand-in for asyncpg.PostgresError when asyncpg is mocked."""
+
+
+class _FakeInterfaceError(Exception):
+    """Stand-in for asyncpg.InterfaceError when asyncpg is mocked."""
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -300,3 +318,213 @@ def test_classify_symptoms_returns_fallback_when_inference_fails():
     assert result["is_fallback"] is True
     assert result["top_condition"] == "unclassifiable"
     assert result["fallback_message"] == core.FALLBACK_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# POST /predict — 503 on database error  (HIGH gap)
+# ---------------------------------------------------------------------------
+
+
+def test_predict_returns_503_on_db_error(client: TestClient):
+    """Router must return 503 when classify_symptoms raises a DB-related error."""
+    asyncpg_stub = sys.modules["asyncpg"]
+    with (
+        patch.object(asyncpg_stub, "PostgresError", _FakePostgresError),
+        patch.object(asyncpg_stub, "InterfaceError", _FakeInterfaceError),
+        patch(
+            "app.services.core.classify_symptoms",
+            new_callable=AsyncMock,
+            side_effect=_FakePostgresError("connection pool exhausted"),
+        ),
+    ):
+        response = client.post(
+            "/predict",
+            json={
+                "patient_id": "P-001",
+                "symptoms": "Patient reports persistent headache and fever for 3 days",
+            },
+        )
+
+    assert response.status_code == 503
+    assert "Database unavailable" in response.json()["detail"]
+
+
+def test_predict_returns_503_on_os_error(client: TestClient):
+    """Router must return 503 when classify_symptoms raises OSError (e.g. socket failure)."""
+    asyncpg_stub = sys.modules["asyncpg"]
+    with (
+        patch.object(asyncpg_stub, "PostgresError", _FakePostgresError),
+        patch.object(asyncpg_stub, "InterfaceError", _FakeInterfaceError),
+        patch(
+            "app.services.core.classify_symptoms",
+            new_callable=AsyncMock,
+            side_effect=OSError("broken pipe"),
+        ),
+    ):
+        response = client.post(
+            "/predict",
+            json={
+                "patient_id": "P-001",
+                "symptoms": "Patient reports persistent headache and fever for 3 days",
+            },
+        )
+
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /predict/{record_id} — additional cases  (HIGH gaps)
+# ---------------------------------------------------------------------------
+
+
+def test_get_prediction_invalid_id_type(client: TestClient):
+    """Non-integer path segment must return 422, not 500."""
+    response = client.get("/predict/abc")
+    assert response.status_code == 422
+
+
+def test_get_prediction_returns_fallback_message_when_is_fallback(client: TestClient):
+    """When the stored record has is_fallback=True the response must include fallback_message."""
+    fallback_record = {
+        **MOCK_PREDICTION,
+        "is_fallback": True,
+        "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ",
+    }
+    with patch("app.services.core.get_prediction_by_id", new_callable=AsyncMock, return_value=fallback_record):
+        response = client.get("/predict/1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_fallback"] is True
+    assert body["fallback_message"] == "Không thể phân loại, vui lòng tham khảo bác sĩ"
+
+
+# ---------------------------------------------------------------------------
+# POST /predict — boundary validation  (MEDIUM gaps)
+# ---------------------------------------------------------------------------
+
+
+def test_predict_rejects_patient_id_too_long(client: TestClient):
+    response = client.post(
+        "/predict",
+        json={
+            "patient_id": "P" * 65,
+            "symptoms": "Patient reports persistent headache and fever for 3 days",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_predict_rejects_symptoms_too_long(client: TestClient):
+    response = client.post(
+        "/predict",
+        json={
+            "patient_id": "P-001",
+            "symptoms": "x" * 1001,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_predict_rejects_notes_too_long(client: TestClient):
+    response = client.post(
+        "/predict",
+        json={
+            "patient_id": "P-001",
+            "symptoms": "Patient reports persistent headache and fever for 3 days",
+            "notes": "n" * 501,
+        },
+    )
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /health — model=unavailable branch  (MEDIUM gap)
+# ---------------------------------------------------------------------------
+
+
+def test_health_model_unavailable(client: TestClient):
+    """When get_classifier returns None the health response must report model=unavailable."""
+    with (
+        patch("app.services.core.check_db_health", new_callable=AsyncMock, return_value=True),
+        patch("app.services.core.get_classifier", return_value=None),
+    ):
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model"] == "unavailable"
+    assert body["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# /metrics endpoint  (LOW gap)
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_endpoint_is_reachable(client: TestClient):
+    """/metrics must respond 200 with Prometheus text format."""
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "http_requests_total" in response.text
+
+
+# ---------------------------------------------------------------------------
+# check_db_health — unit tests  (LOW gaps)
+# ---------------------------------------------------------------------------
+
+
+def test_check_db_health_returns_true_when_db_ok():
+    """check_db_health returns True when the pool query succeeds."""
+    import asyncio
+    from app.services import core
+
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_conn.fetchval = AsyncMock(return_value=1)
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    async def _run():
+        with patch("app.services.core.get_db_pool", new_callable=AsyncMock, return_value=mock_pool):
+            return await core.check_db_health()
+
+    assert asyncio.run(_run()) is True
+
+
+def test_check_db_health_returns_false_on_exception():
+    """check_db_health returns False (does not raise) when the pool is unavailable."""
+    import asyncio
+    from app.services import core
+
+    async def _run():
+        with patch(
+            "app.services.core.get_db_pool",
+            new_callable=AsyncMock,
+            side_effect=Exception("connection refused"),
+        ):
+            return await core.check_db_health()
+
+    assert asyncio.run(_run()) is False
+
+
+# ---------------------------------------------------------------------------
+# _run_inference — retry behaviour  (LOW gap)
+# ---------------------------------------------------------------------------
+
+
+def test_run_inference_retries_three_times_before_raising():
+    """tenacity must call the classifier exactly 3 times before re-raising."""
+    from app.services.core import _run_inference
+
+    failing_clf = MagicMock(side_effect=RuntimeError("GPU OOM"))
+
+    # Suppress the exponential back-off so the test does not sleep.
+    _run_inference.retry.sleep = lambda _: None  # type: ignore[attr-defined]
+    try:
+        with pytest.raises(RuntimeError, match="GPU OOM"):
+            _run_inference(failing_clf, "Patient has persistent headache and fever for 3 days")
+        assert failing_clf.call_count == 3
+    finally:
+        import time
+        _run_inference.retry.sleep = time.sleep  # type: ignore[attr-defined]
