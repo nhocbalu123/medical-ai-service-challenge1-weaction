@@ -23,6 +23,7 @@ from app.services.providers import classify_with_fallback
 logger = structlog.get_logger(__name__)
 
 MODEL_VERSION = os.getenv("MODEL_VERSION", "1.0.0")
+MODEL_NAME = os.getenv("MODEL_NAME", "facebook/bart-large-mnli")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:

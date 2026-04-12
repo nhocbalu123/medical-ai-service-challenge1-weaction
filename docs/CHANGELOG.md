@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Grafana dashboard provisioning (`docker/grafana/provisioning/dashboards/`).** `dashboards.yaml` provider config (required for Grafana to discover JSON files) and `medical-ai.json` dashboard with 8 panels: request rate, 5xx error rate, fallback rate, RAM, P50/P95/P99 latency, inference latency by provider, prediction rate by provider, CPU %.
 
-- **X-API-Key authentication (`app/core/security.py`).** `require_api_key` FastAPI dependency uses `hmac.compare_digest` over SHA-256 hashes for timing-safe comparison. Supports multiple keys via `API_KEYS=key1,key2`. Dev-mode bypass when `API_KEYS` is unset. Applied to `POST /predict` and `GET /predict/{id}`; `/health` and `/metrics` remain public.
+- **Protected-route authentication (`app/core/security.py`).** `require_api_key` FastAPI dependency uses `hmac.compare_digest` over SHA-256 hashes for timing-safe API-key comparison and also accepts valid Bearer JWTs. Supports multiple keys via `API_KEYS=key1,key2`. Dev-mode bypass when `API_KEYS` is unset. Applied to `POST /predict` and `GET /predict/{id}`; `/health` and `/metrics` remain public.
 
 - **JWT authentication (`app/core/auth.py`, `app/routers/auth.py`).** `POST /auth/token` issues HS256 Bearer tokens. `get_current_user` dependency validates tokens. User store is in-memory (seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars) — replace with DB query for production.
 
@@ -46,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`app/main.py`** — lifespan warm-up changed from `core.get_classifier()` to `providers._hf_provider._load()` to warm up the correct singleton; auth and API routers both registered.
 
-- **`app/routers/api.py`** — `/health` now reports `model: "multi-provider"` instead of checking `get_classifier()`.
+- **`app/routers/api.py` / `app/services/core.py`** — `/health` now returns `model` from module-level `MODEL_NAME` (mirrors `MODEL_VERSION`) instead of a hardcoded string.
 
 - **`docker/docker-compose.yml`** — `api` service receives all new env vars; `prometheus` service mounts `alerts.yml` and runs with `--web.enable-lifecycle`; `alertmanager` service added.
 

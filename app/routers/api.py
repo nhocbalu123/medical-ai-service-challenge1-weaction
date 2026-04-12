@@ -93,6 +93,6 @@ async def health():
     return {
         "status": "ok" if db_ok else "degraded",
         "db": "healthy" if db_ok else "unreachable",
-        "model": "multi-provider",
+        "model": core.MODEL_NAME,
         "version": core.MODEL_VERSION,
     }

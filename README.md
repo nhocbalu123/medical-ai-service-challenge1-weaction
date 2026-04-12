@@ -14,7 +14,7 @@ A production-ready **FastAPI** standalone backend service, built as a monolith, 
 POST /predict   →  Pydantic validation  →  HF zero-shot classifier (retry ×3)  →  save to Postgres  →  return JSON
                                          └─ fallback if model unavailable ──────┘  (is_fallback=true)
 GET  /predict/{id}  →  fetch from Postgres  →  return JSON
-GET  /health    →  check DB + model status  →  return JSON
+GET  /health    →  check DB + expose model metadata  →  return JSON
 ```
 
 **Tech stack:** FastAPI · Pydantic v2 · asyncpg · HuggingFace Transformers · PostgreSQL 16 · Docker multi-stage · structlog · OpenTelemetry · Grafana Tempo · Prometheus · Langfuse
@@ -188,7 +188,7 @@ For full setup and troubleshooting details, see [`docs/RUNBOOK.md`](docs/RUNBOOK
 | ------ | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST` | `/predict`      | Submit symptoms → get AI prediction + saved to DB. Returns `201` when the model is unavailable (check `is_fallback`); returns `503` only when the database is unreachable. |
 | `GET`  | `/predict/{id}` | Retrieve a saved prediction by record ID                                                                                                                                   |
-| `GET`  | `/health`       | Live status of API, DB, and model                                                                                                                                          |
+| `GET`  | `/health`       | Live status of API/DB plus configured model name (`MODEL_NAME`) and model version (`MODEL_VERSION`)                                                                       |
 | `GET`  | `/metrics`      | Prometheus metrics endpoint                                                                                                                                                |
 
 ### Fallback behaviour

@@ -45,8 +45,8 @@ fallbacks) to predict possible medical conditions from patient symptom
 descriptions.  All predictions are saved to PostgreSQL for tracking.
 
 ### Authentication
-Most endpoints require an `X-API-Key` header.  Obtain a Bearer token via
-`POST /auth/token` if using JWT authentication.
+Most endpoints require authentication. Use either `X-API-Key` or a Bearer token
+from `POST /auth/token`.
 
 > This service is for **demo/educational purposes only** and is NOT a substitute for professional medical advice.
     """,
