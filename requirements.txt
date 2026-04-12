@@ -7,3 +7,22 @@ torch==2.5.1
 numpy==1.26.4
 python-dotenv==1.0.1
 httpx==0.28.0
+tenacity==8.2.3
+# Observability — all OTel packages must share the same API version (>=1.33.1 required by langfuse 4.x)
+opentelemetry-sdk>=1.33.1,<2
+opentelemetry-instrumentation-fastapi>=0.54b0
+opentelemetry-instrumentation-asyncpg>=0.54b0
+opentelemetry-exporter-otlp-proto-http>=1.33.1,<2
+opentelemetry-exporter-prometheus>=0.54b0
+prometheus-client==0.21.1
+structlog==25.5.0
+langfuse==4.0.6
+psutil==7.2.2
+# Multi-provider LLM fallback
+openai>=1.30.0
+aiobreaker>=1.0
+# Security — JWT + API key auth
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+# Rate limiting
+slowapi>=0.1.9

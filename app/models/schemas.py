@@ -33,15 +33,22 @@ class SymptomRequest(BaseModel):
     }
 
 
+class ConditionScore(BaseModel):
+    label: str
+    score: float
+
+
 class PredictionResponse(BaseModel):
     record_id: int
     patient_id: str
     symptoms: str
     top_condition: str
     confidence: float
-    all_predictions: list[dict]
+    all_predictions: list[ConditionScore]
     model_version: str
     created_at: datetime
+    is_fallback: bool = False
+    fallback_message: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

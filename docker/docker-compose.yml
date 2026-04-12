@@ -7,15 +7,37 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: medical_api
+    env_file:
+      - ../.env
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-medicaldb}
+      POSTGRES_HOST: db
       MODEL_NAME: ${MODEL_NAME:-facebook/bart-large-mnli}
       MODEL_VERSION: ${MODEL_VERSION:-1.0.0}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-medical-ai-service}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment=dev}
+      # Optional LLM fallback providers — leave blank to skip
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Security
+      API_KEYS: ${API_KEYS:-}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-dev-secret-change-in-production}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
     depends_on:
       db:
         condition: service_healthy
+      tempo:
+        condition: service_started
     restart: unless-stopped
     networks:
       - medical_net
@@ -30,26 +52,102 @@ services:
   db:
     image: postgres:16-alpine
     container_name: medical_db
+    env_file:
+      - ../.env
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-medicaldb}
-    ports:
-      - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
       - medical_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d medicaldb"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-medicaldb}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
+  # ── Local observability demo ─────────────────────────────────────
+  # NOTE: In production, Prometheus and Grafana live in a shared ops/infra
+  # stack separate from each service. These containers are provided here
+  # purely so you can run `docker compose up` and immediately see metrics
+  # at localhost:9090 (Prometheus) and localhost:3000 (Grafana).
+  # Remove this section when deploying to a real environment.
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: medical_tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "4318:4318"   # OTLP HTTP ingest
+      - "3200:3200"   # Tempo query API (Grafana datasource)
+    restart: unless-stopped
+    networks:
+      - medical_net
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: medical_prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"   # allows POST /-/reload to reload rules without restart
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - medical_net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: medical_alertmanager
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - medical_net
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: medical_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - medical_net
+
 volumes:
   pg_data:
+  prometheus_data:
+  grafana_data:
+  tempo_data:
 
 networks:
   medical_net:

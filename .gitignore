@@ -8,3 +8,8 @@ venv/
 dist/
 .pytest_cache/
 .mypy_cache/
+.coverage
+
+# AlertManager config contains Slack webhook URL — keep out of version control.
+# Copy docker/alertmanager.yml.example → docker/alertmanager.yml and fill in the URL.
+docker/alertmanager.yml
