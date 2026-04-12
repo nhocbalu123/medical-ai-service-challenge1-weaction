@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> Historical entries below describe behavior at the time of each release. For current runtime behavior, use the latest `Unreleased` section, `README.md`, and `docs/RUNBOOK.md`.
+
 ---
 
 ## [Unreleased]
@@ -56,8 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **12 new test cases** in `tests/test_api.py` filling the gaps identified in the coverage audit:
     - *High severity:* `POST /predict` → 503 on `asyncpg.PostgresError` and `OSError`; `GET /predict/abc` → 422 on non-integer path; `GET /predict/{id}` returns `fallback_message` when the stored record has `is_fallback=True`.
-    - *Medium severity:* `patient_id` > 64 chars → 422; `notes` > 500 chars → 422; `symptoms` > 1000 chars → 422; explicit assertion that `GET /health` returns `model=unavailable` when `get_classifier` returns `None`.
-    - *Low severity:* `GET /metrics` reachable and contains `http_requests_total`; `check_db_health` unit tests for success and silent-failure paths; `_run_inference` retry-count assertion (tenacity calls classifier exactly 3 times before re-raising).
+    - *Medium severity:* `patient_id` > 64 chars → 422; `notes` > 500 chars → 422; `symptoms` > 1000 chars → 422; explicit assertion that `GET /health` returns model/version metadata from `core.MODEL_NAME` / `core.MODEL_VERSION`.
+    - *Low severity:* `GET /metrics` reachable and contains `http_requests_total`; `check_db_health` unit tests for success and silent-failure paths; provider-chain unit tests for `classify_symptoms()` fallback vs non-fallback persistence paths.
 - **`pytest.ini`** at repo root — configures `testpaths = tests`, enables `--cov=app --cov-report=term-missing`, and enforces a 70 % coverage floor (`--cov-fail-under=70`). Running `python -m pytest` now produces a full coverage report automatically.
 - **`pytest-cov==7.1.0`** added to `requirements-dev.txt`.
 
@@ -178,7 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Removed dangerous mock-mode fallback.** If the HuggingFace model fails to load, the service no longer returns fake random predictions. Instead, `POST /predict` now explicitly returns a `503 Service Unavailable` error, and `GET /health` reports `"model": "unavailable"`.
+- **Removed dangerous mock-mode fallback.** If the HuggingFace model fails to load, the service no longer returns fake random predictions. At this 2.1.0 point-in-time, `POST /predict` returned `503 Service Unavailable` and `GET /health` reported `"model": "unavailable"` (later superseded in 2.2.0+ by `201` with `is_fallback=true`).
 
 ### Fixed
 

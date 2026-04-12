@@ -25,18 +25,17 @@ RUN chmod -R a+rX /hf-cache
 ENV HF_HOME=/hf-cache
 ```
 
-**Fix — Layer 2, explicit error instead of mock data (safety net):** `get_classifier()` wraps the load in `try/except` and returns `None` on failure. `classify_symptoms()` detects `None` and, at this stage, raised a `RuntimeError` that the API layer converted to HTTP 503. The service stayed alive to serve `/health` (which reports `"model": "unavailable"`) and other endpoints, but explicitly refused to make fake predictions.
+**Fix — Layer 2, explicit non-mock behavior (safety net):** We removed silent mock predictions and introduced explicit fallback behavior. The current flow keeps the service alive, attempts the provider chain, and returns `is_fallback=true` with a safe `"unclassifiable"` output when all providers fail.
 
 ```python
-def get_classifier():
-    global _classifier
-    if _classifier is None:
-        try:
-            _classifier = pipeline("zero-shot-classification", model=MODEL_NAME)
-        except Exception as e:
-            logger.error(f"Model load failed: {e}")
-            _classifier = None
-    return _classifier
+result_data, is_fallback = await classify_with_fallback(symptoms)
+if is_fallback:
+    return {
+        "top_condition": "unclassifiable",
+        "confidence": 0.0,
+        "all_predictions": [],
+        "is_fallback": True,
+    }
 ```
 
 > **Note:** The Layer 2 behaviour (503 on model failure) was subsequently improved in **Mistake 6**. `classify_symptoms` no longer raises; it returns a safe fallback dict with `is_fallback=True`. `POST /predict` now always returns `201 Created` — see Mistake 6 for the current verification steps.
@@ -83,26 +82,26 @@ def get_classifier():
 
 ## Mistake 6 — No retry or fallback for model inference failures
 
-**Problem:** `classify_symptoms` called the HuggingFace pipeline directly with no retry logic. A single transient error (GPU OOM, thread timeout, etc.) immediately raised `RuntimeError`, which the API layer converted to `HTTP 503 Service Unavailable`, crashing the request with no recovery attempt. When the model failed to load (`_classifier = None`) there was also no fallback — the service simply refused all prediction requests.
+**Problem:** Earlier versions used a single-provider inference path, so transient model errors could fail requests without trying alternative providers.
 
-**Fix — Layer 1, retry with tenacity:** The synchronous inference call is now wrapped in `_run_inference`, decorated with `@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True)`. Up to 3 attempts are made with exponential backoff before the failure is considered permanent.
+**Fix — Layer 1, retry with tenacity:** Retries now live at the provider level in `app/services/providers.py`. HuggingFace retries up to 3 times (exponential backoff), while OpenAI/Gemini retry up to 2 times each.
 
 ```python
+@_hf_breaker
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=8),
     reraise=True,
-    before_sleep=before_sleep_log(logger, logging.WARNING),
 )
-def _run_inference(clf, symptoms: str) -> dict:
-    return clf(symptoms, CONDITION_LABELS, multi_label=False)
+async def classify(self, symptoms: str) -> dict:
+    ...
 ```
 
-**Fix — Layer 2, default fallback response:** When the classifier is `None` or all retries fail, `classify_symptoms` no longer raises. It returns a safe default dict with `is_fallback=True`, `top_condition="unclassifiable"`, `confidence=0.0`, and a Vietnamese advisory message. The `try/except RuntimeError` in `api.py` is removed; `POST /predict` always returns `201`.
+**Fix — Layer 2, provider-chain fallback response:** `classify_symptoms` now delegates to `classify_with_fallback()` (HuggingFace → OpenAI → Gemini). If every available provider fails (or circuit breakers are open), it returns a safe default with `is_fallback=True`, `top_condition="unclassifiable"`, `confidence=0.0`, and a Vietnamese advisory message. The router still returns `201` for this model-failure mode.
 
 **Fix — Layer 3, audit persistence:** Fallback records are stored in PostgreSQL with an `is_fallback BOOLEAN` column so the care team can identify unclassified requests and data analysts can exclude them from model metrics.
 
-**How to verify:** When the model fails to load or inference throws, `POST /predict` returns `201` with `"is_fallback": true` and `"fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"` instead of `503`.
+**How to verify:** Force all providers to fail (e.g., invalid external keys and HuggingFace failure). `POST /predict` should still return `201` with `"is_fallback": true` and `"fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"` instead of `503`.
 
 ---
 

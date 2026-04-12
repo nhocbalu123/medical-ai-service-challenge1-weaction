@@ -88,7 +88,7 @@ python -m pytest -k test_predict_returns_503_on_db_error -v
 | Area | Tests |
 |------|-------|
 | `GET /health` | healthy, degraded DB, configured model metadata |
-| `POST /predict` | happy path, optional fields, fallback (model unavailable) |
+| `POST /predict` | happy path, optional fields, fallback (all providers failed) |
 | `POST /predict` validation | symptoms too short/long, blank, missing `patient_id`, `patient_id` too long, `age` out of range, `notes` too long |
 | `POST /predict` errors | 503 on asyncpg DB error, 503 on `OSError` |
 | `GET /predict/{id}` | found, not found (404), non-integer ID (422), record with `is_fallback=True` |
@@ -149,12 +149,12 @@ Response:
 }
 ```
 
-### POST /predict — fallback response (model unavailable)
+### POST /predict — fallback response (all providers failed)
 
 When the model is unavailable the API still returns `201`. Check `is_fallback`:
 
 ```bash
-# Example response when model failed to load or all retries exhausted:
+# Example response when all available providers fail:
 # {
 #   "record_id": 7,
 #   "patient_id": "P-042",
@@ -221,10 +221,11 @@ CREATE TABLE IF NOT EXISTS predictions (
 ALTER TABLE predictions
     ADD COLUMN IF NOT EXISTS age         SMALLINT,
     ADD COLUMN IF NOT EXISTS notes       TEXT,
-    ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS provider    VARCHAR(32) DEFAULT 'huggingface';
 ```
 
-To find all fallback records (where the model could not classify):
+To find all fallback records (where no provider could classify):
 
 ```sql
 SELECT id, patient_id, created_at FROM predictions WHERE is_fallback = TRUE ORDER BY created_at DESC;
@@ -236,9 +237,9 @@ SELECT id, patient_id, created_at FROM predictions WHERE is_fallback = TRUE ORDE
 
 There are two distinct failure modes with different HTTP outcomes:
 
-### Model unavailable (→ 201 with `is_fallback: true`)
+### All providers failed (→ 201 with `is_fallback: true`)
 
-When the HuggingFace model cannot classify (model failed to load, or inference fails after 3 retry attempts), `POST /predict` returns `201 Created`. The response body contains:
+When the provider fallback chain cannot produce a classification (HuggingFace/OpenAI/Gemini all fail or are unavailable), `POST /predict` returns `201 Created`. The response body contains:
 
 ```json
 {
