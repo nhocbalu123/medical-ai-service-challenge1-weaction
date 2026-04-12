@@ -1,0 +1,73 @@
+groups:
+  - name: medical-ai-service
+    interval: 30s
+    rules:
+
+      # API 5xx error rate > 5% over a 5-minute window
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status_code=~"5.."}[5m])
+          / rate(http_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate ({{ $value | humanizePercentage }})"
+          description: >
+            More than 5% of requests are returning 5xx errors on
+            {{ $labels.instance }}. Check the API logs and DB connectivity.
+
+      # P95 response time > 10 seconds
+      - alert: SlowResponses
+        expr: |
+          histogram_quantile(
+            0.95,
+            rate(http_server_duration_milliseconds_bucket[5m])
+          ) > 10000
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 latency > 10s"
+          description: >
+            The 95th-percentile response time has exceeded 10 seconds for
+            3 minutes. Check model inference or DB query performance.
+
+      # AI fallback rate > 20% — all providers are struggling
+      - alert: HighFallbackRate
+        expr: |
+          rate(medical_ai_fallback_total[10m])
+          / rate(medical_ai_predictions_total[10m]) > 0.20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI fallback rate > 20%"
+          description: >
+            More than 20% of predictions are hitting the hardcoded fallback,
+            meaning all providers (HuggingFace, OpenAI, Gemini) are failing.
+            Check provider credentials and circuit-breaker state.
+
+      # Process RSS memory > 3.4 GB (85% of 4 GB)
+      - alert: HighMemoryUsage
+        expr: process_rss_bytes / 1073741824 > 3.4
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage ({{ $value | humanize }}GB)"
+          description: >
+            Process RSS is above 3.4 GB. The HuggingFace model alone uses
+            ~1.6 GB; consider restarting the service if memory keeps growing.
+
+      # CPU usage > 90%
+      - alert: HighCPUUsage
+        expr: process_cpu_percent > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage ({{ $value }}%)"
+          description: >
+            CPU has been above 90% for 5 minutes.
+            Inference requests may be queuing. Consider scaling out.

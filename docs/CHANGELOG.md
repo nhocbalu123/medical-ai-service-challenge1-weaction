@@ -11,6 +11,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multi-provider LLM fallback chain (`app/services/providers.py`).** Classification now tries providers in order: HuggingFace (local, retry 3×) → OpenAI (retry 2×) → Gemini (retry 2×) → hardcoded `"unclassifiable"` fallback. Each provider has an `aiobreaker` circuit breaker (fail\_max=3, 60 s reset) to skip failing providers immediately after repeated errors. Providers without credentials (`OPENAI_API_KEY`, `GEMINI_API_KEY`) are automatically skipped.
+
+- **`app/core/constants.py`** — single source of truth for `CONDITION_LABELS`, imported by both `core.py` and `providers.py`.
+
+- **Custom OTel metrics (`app/services/core.py`).** Three new instruments recorded per classification request:
+    - `medical_ai_predictions_total` (counter, label: `provider`) — total predictions by provider.
+    - `medical_ai_fallback_total` (counter) — total hardcoded-fallback responses.
+    - `medical_ai_inference_duration_ms` (histogram, label: `provider`) — end-to-end inference latency.
+
+- **Prometheus AlertManager (`docker/prometheus/alerts.yml`, `docker/alertmanager.yml`).** Five alert rules: `HighErrorRate` (5xx > 5%), `SlowResponses` (P95 > 10 s), `HighFallbackRate` (fallback > 20%), `HighMemoryUsage` (RSS > 3.4 GB), `HighCPUUsage` (CPU > 90%). AlertManager routes to Slack with critical/warning separation and inhibition rules. `docker/prometheus.yml` updated with `rule_files` and `alerting` sections. Prometheus started with `--web.enable-lifecycle` for config reload without restart.
+
+- **Grafana dashboard provisioning (`docker/grafana/provisioning/dashboards/`).** `dashboards.yaml` provider config (required for Grafana to discover JSON files) and `medical-ai.json` dashboard with 8 panels: request rate, 5xx error rate, fallback rate, RAM, P50/P95/P99 latency, inference latency by provider, prediction rate by provider, CPU %.
+
+- **X-API-Key authentication (`app/core/security.py`).** `require_api_key` FastAPI dependency uses `hmac.compare_digest` over SHA-256 hashes for timing-safe comparison. Supports multiple keys via `API_KEYS=key1,key2`. Dev-mode bypass when `API_KEYS` is unset. Applied to `POST /predict` and `GET /predict/{id}`; `/health` and `/metrics` remain public.
+
+- **JWT authentication (`app/core/auth.py`, `app/routers/auth.py`).** `POST /auth/token` issues HS256 Bearer tokens. `get_current_user` dependency validates tokens. User store is in-memory (seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars) — replace with DB query for production.
+
+- **Rate limiting (`app/core/limiter.py`).** `slowapi` limiter at 30 requests/minute per IP on `POST /predict`. Limiter state lives in `app.state.limiter`; shared singleton in `app/core/limiter.py` avoids circular imports.
+
+- **Security headers middleware (`app/main.py`).** `SecurityHeadersMiddleware` adds `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Strict-Transport-Security` (effective only over HTTPS/TLS proxy) to every response.
+
+- **CORS middleware (`app/main.py`).** `CORSMiddleware` configured from `ALLOWED_ORIGINS` env var. Empty values are filtered so `ALLOWED_ORIGINS=""` does not produce `[""]`.
+
+- **New dependencies:** `openai>=1.30.0`, `aiobreaker>=1.0`, `python-jose[cryptography]>=3.3.0`, `passlib[bcrypt]>=1.7.4`, `slowapi>=0.1.9`.
+
+- **New environment variables:** `OPENAI_API_KEY`, `OPENAI_MODEL`, `GEMINI_API_KEY`, `API_KEYS`, `JWT_SECRET_KEY`, `JWT_EXPIRE_MINUTES`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ALLOWED_ORIGINS`. All optional (documented in `.env.example`).
+
+- **`docker/alertmanager.yml.example`** — template with placeholder Slack webhook URL. The real `docker/alertmanager.yml` is listed in `.gitignore` to prevent committing secrets.
+
+### Changed
+
+- **`app/services/core.py`** — inference path replaced with `classify_with_fallback()`; Langfuse trace now wraps the entire fallback chain (one trace per request regardless of provider used); `provider` column added to `predictions` table (migration guard with `ADD COLUMN IF NOT EXISTS`); `MODEL_VERSION` persisted per-row.
+
+- **`app/main.py`** — lifespan warm-up changed from `core.get_classifier()` to `providers._hf_provider._load()` to warm up the correct singleton; auth and API routers both registered.
+
+- **`app/routers/api.py`** — `/health` now reports `model: "multi-provider"` instead of checking `get_classifier()`.
+
+- **`docker/docker-compose.yml`** — `api` service receives all new env vars; `prometheus` service mounts `alerts.yml` and runs with `--web.enable-lifecycle`; `alertmanager` service added.
+
+- **`.gitignore`** — `docker/alertmanager.yml` added.
+
+---
+
 - **12 new test cases** in `tests/test_api.py` filling the gaps identified in the coverage audit:
     - *High severity:* `POST /predict` → 503 on `asyncpg.PostgresError` and `OSError`; `GET /predict/abc` → 422 on non-integer path; `GET /predict/{id}` returns `fallback_message` when the stored record has `is_fallback=True`.
     - *Medium severity:* `patient_id` > 64 chars → 422; `notes` > 500 chars → 422; `symptoms` > 1000 chars → 422; explicit assertion that `GET /health` returns `model=unavailable` when `get_classifier` returns `None`.

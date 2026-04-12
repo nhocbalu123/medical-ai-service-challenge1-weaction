@@ -393,3 +393,87 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 | Prometheus shows `medical_api` target as DOWN                               | DNS resolution fails inside Compose network                                                                                              | Ensure the target in `prometheus.yml` is `api:8000` (the Compose service name), not `localhost:8000`                                                                                                                                                                                                                                                            |
 | Logs are printed as plain text, not JSON                                    | `LOG_FORMAT` not set to `json`                                                                                                           | Set `LOG_FORMAT=json` in `.env` and restart                                                                                                                                                                                                                                                                                                                     |
 | Langfuse traces not appearing                                               | Keys missing or wrong host                                                                                                               | Verify `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set; check for `langfuse_init_failed` event in logs                                                                                                                                                                                                                                                    |
+| `POST /predict` returns `401 Missing X-API-Key header`                      | `API_KEYS` is set in env but header not sent                                                                                             | Add `-H "X-API-Key: <your-key>"` to the request; see Section 8 for full auth guide                                                                                                                                                                                                                                                                              |
+| `POST /predict` returns `429 Too Many Requests`                             | Rate limit (30 req/min/IP) exceeded                                                                                                     | Back off and retry after 60 s; or increase `slowapi` limit in `app/routers/api.py` if needed                                                                                                                                                                                                                                                                    |
+| AlertManager container fails to start                                       | `docker/alertmanager.yml` is missing (it is gitignored)                                                                                 | Copy `docker/alertmanager.yml.example` → `docker/alertmanager.yml` and fill in the Slack webhook URL                                                                                                                                                                                                                                                            |
+| Alerts fire in Prometheus but no Slack message arrives                      | Slack webhook URL still set to placeholder                                                                                               | Open `docker/alertmanager.yml`, replace `https://hooks.slack.com/services/REPLACE/...` with the real URL, restart AlertManager: `docker compose -f docker/docker-compose.yml restart alertmanager`                                                                                                                                                              |
+| Alert rules not reloading after editing `docker/prometheus/alerts.yml`      | Prometheus requires explicit reload                                                                                                     | `curl -X POST http://localhost:9090/-/reload` (works because `--web.enable-lifecycle` flag is set); alternatively restart: `docker compose -f docker/docker-compose.yml restart prometheus`                                                                                                                                                                      |
+| `is_fallback: true` even with `OPENAI_API_KEY` set                          | Circuit breaker may be open after 3 consecutive failures                                                                                 | Check logs for `provider_circuit_open` events; the breaker resets after 60 s automatically. Verify the key is valid by calling the OpenAI API directly.                                                                                                                                                                                                         |
+
+---
+
+## 8. Authentication Guide
+
+### X-API-Key (recommended for service-to-service)
+
+Set one or more keys in `.env`:
+
+```
+API_KEYS=my-secret-key-1,my-secret-key-2
+```
+
+Include the header on every protected request:
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "X-API-Key: my-secret-key-1" \
+  -H "Content-Type: application/json" \
+  -d '{"patient_id": "p001", "symptoms": "headache and fever for 3 days"}'
+```
+
+When `API_KEYS` is empty/unset, auth is disabled (dev mode). The `/health` and `/metrics` endpoints are always public.
+
+### JWT Bearer Token (for user-facing clients)
+
+1. Obtain a token:
+
+```bash
+curl -X POST http://localhost:8000/auth/token \
+  -d "username=admin&password=your-admin-password" \
+  -H "Content-Type: application/x-www-form-urlencoded"
+# Returns: {"access_token": "eyJ...", "token_type": "bearer"}
+```
+
+2. Use the token:
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{"patient_id": "p001", "symptoms": "headache and fever for 3 days"}'
+```
+
+Tokens expire after `JWT_EXPIRE_MINUTES` (default 60). Set a strong `JWT_SECRET_KEY` in production (`openssl rand -hex 32`).
+
+---
+
+## 9. Multi-Provider Fallback
+
+The service tries providers in order. Configure credentials to enable each:
+
+| Provider | Env var | Notes |
+|----------|---------|-------|
+| HuggingFace (local) | _(always available)_ | `facebook/bart-large-mnli` baked into image |
+| OpenAI | `OPENAI_API_KEY` | Model set by `OPENAI_MODEL` (default: `gpt-4o-mini`) |
+| Gemini | `GEMINI_API_KEY` | Uses `gemini-2.0-flash` via REST API |
+
+If all providers fail, the response includes `is_fallback: true` and `fallback_message`.
+
+Each provider has a circuit breaker (3 failures → open for 60 s). Monitor via the `HighFallbackRate` alert and the `medical_ai_predictions_total` metric with `provider` label.
+
+---
+
+## 10. Alerting Setup
+
+1. Copy the AlertManager config: `cp docker/alertmanager.yml.example docker/alertmanager.yml`
+2. Edit `docker/alertmanager.yml` — replace the placeholder Slack webhook URLs with real ones.
+3. Start the stack: `docker compose -f docker/docker-compose.yml up -d alertmanager`
+4. Verify in Prometheus UI (http://localhost:9090/alerts) that alerts are in `INACTIVE` state.
+
+To reload alert rules without restarting Prometheus:
+
+```bash
+curl -X POST http://localhost:9090/-/reload
+```
+
+AlertManager UI is at http://localhost:9093.

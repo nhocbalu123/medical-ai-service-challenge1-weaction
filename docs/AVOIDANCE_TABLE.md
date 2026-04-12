@@ -273,3 +273,98 @@ Unlike the `asyncpg` stub (which uses the `if _mod not in sys.modules` guard to 
 **How to verify:** Install `opentelemetry-instrumentation-asyncpg` and run `python -m pytest --no-cov`. All 27 tests should pass without any `ModuleNotFoundError` or `wrapt` traceback.
 
 **Principle:** When a test suite stubs a module with a flat `MagicMock`, also stub any *other* installed package that introspects or monkey-patches that module at import time. Instrumentation libraries (OTel, `wrapt`, `ddtrace`, etc.) that patch the module's internal sub-modules will fail when the stub is a plain object rather than a real package hierarchy.
+
+---
+
+## Mistake 13 — Using `pybreaker` for async code
+
+**Problem:** The original implementation plan called for `pybreaker` to add circuit-breaker protection around provider calls. `pybreaker.CircuitBreaker` wraps synchronous callables. When used as a decorator or call wrapper on `async def` functions it does not await the coroutine — it calls the coroutine factory without `await`, so the coroutine is created but never executed and errors are never counted. The breaker opens only on synchronous exceptions; async failures pass through silently.
+
+**Fix:** Use `aiobreaker` instead, which is the async-native circuit breaker library. It wraps `async def` functions correctly with `await` and tracks async exceptions:
+
+```python
+from aiobreaker import CircuitBreaker, CircuitBreakerError
+
+_hf_breaker = CircuitBreaker(fail_max=3, timeout_duration=60)
+
+@_hf_breaker
+async def classify(self, symptoms: str) -> dict:
+    ...
+```
+
+Catch `CircuitBreakerError` separately in the fallback chain to distinguish "breaker is open" from "provider actually failed this request":
+
+```python
+try:
+    result = await provider.classify(symptoms)
+except CircuitBreakerError:
+    logger.warning("provider_circuit_open", provider=provider.name)
+except Exception as exc:
+    logger.warning("provider_failed", provider=provider.name, error=str(exc))
+```
+
+**Principle:** Never assume a sync circuit-breaker library works with async functions. Always check whether the library uses `await` internally. The name may look compatible but the actual call mechanics are completely different.
+
+---
+
+## Mistake 14 — AlertManager YAML does not expand `${ENV_VAR}` syntax
+
+**Problem:** AlertManager's YAML parser reads the config file as a plain YAML document. It does not perform shell-style environment variable substitution. Writing `api_url: "${SLACK_WEBHOOK_URL}"` results in the literal string `"${SLACK_WEBHOOK_URL}"` being sent as the webhook URL — AlertManager will attempt to POST to that address and silently receive connection errors.
+
+**Fix:** Write the Slack webhook URL as a literal value directly in `alertmanager.yml`. To prevent the secret from being committed:
+
+1. Create `alertmanager.yml.example` with a placeholder URL — commit this file.
+2. Add `docker/alertmanager.yml` to `.gitignore`.
+3. Document in the RUNBOOK that operators must copy the example and fill in the real URL before starting the stack.
+
+If automation is needed, use `envsubst` in a Makefile target or an entrypoint script to produce the file from the template at deploy time:
+
+```bash
+envsubst < docker/alertmanager.yml.example > docker/alertmanager.yml
+```
+
+**Principle:** AlertManager, Prometheus, and most YAML-based config systems do not perform runtime env-var expansion. Only Docker Compose YAML and shell scripts do this natively. Always check the tool's documentation before relying on `${VAR}` syntax.
+
+---
+
+## Mistake 15 — Grafana dashboard JSON is silently ignored without a provider config
+
+**Problem:** Creating a dashboard JSON file under `docker/grafana/provisioning/dashboards/` is not sufficient. Grafana reads provisioning configuration from `provisioning/dashboards/*.yaml` (the *provider* config) to know which directory to scan and how to interpret the files. Without a `dashboards.yaml` provider file, Grafana starts normally but never discovers the dashboard JSON — no error is shown, the dashboard simply does not appear.
+
+**Fix:** Create `docker/grafana/provisioning/dashboards/dashboards.yaml` alongside the JSON file:
+
+```yaml
+apiVersion: 1
+providers:
+  - name: medical-ai
+    folder: Medical AI
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
+```
+
+This file tells Grafana to treat the directory as a file-based dashboard source. The Grafana container's `provisioning/` volume must already be mounted (verify in `docker-compose.yml`).
+
+**Principle:** When adding provisioning resources to Grafana (dashboards, datasources, alerting), always check whether a *provider* YAML is needed in addition to the resource file. Datasources use `datasources/*.yaml`; dashboards require a separate `dashboards/*.yaml` provider entry.
+
+---
+
+## Mistake 16 — `CORSMiddleware` with an unset `ALLOWED_ORIGINS` env var produces `[""]`
+
+**Problem:** The pattern `os.getenv("ALLOWED_ORIGINS", "").split(",")` returns `[""]` when `ALLOWED_ORIGINS` is not set (or set to an empty string). A single-element list containing the empty string is passed to `CORSMiddleware` as `allow_origins`. The empty string is not a valid origin; Starlette either rejects all CORS pre-flight requests or behaves unpredictably depending on the version.
+
+**Fix:** Filter empty strings after splitting:
+
+```python
+allow_origins=[
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if o.strip()
+]
+```
+
+This produces an empty list `[]` when the variable is unset — which means no origins are allowed (correct default for an API service) — and a properly filtered list when origins are provided.
+
+**Principle:** Any time you split an env var by a delimiter and use the result as a list, filter out empty strings. `"".split(",")` is `[""]`, not `[]`.

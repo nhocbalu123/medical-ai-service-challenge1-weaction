@@ -1,22 +1,27 @@
 """
-Business logic: wraps the HuggingFace zero-shot classification pipeline
-and handles DB persistence via asyncpg.
+Business logic: orchestrates multi-provider classification and DB persistence.
+
+Inference is delegated to app.services.providers.classify_with_fallback which
+tries HuggingFace → OpenAI → Gemini in order.  If all providers fail,
+is_fallback=True is returned and the record is still persisted for audit.
+
+Database errors (asyncpg.PostgresError) propagate to the caller unchanged;
+the caller maps them to an HTTP response.
 """
+
 import json
-import logging
 import os
-import asyncio
-import asyncpg
-import structlog
-from datetime import datetime, timezone
+import time
 from typing import Optional
 
-from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
+import asyncpg
+import structlog
+from opentelemetry import metrics as otel_metrics
+
+from app.services.providers import classify_with_fallback
 
 logger = structlog.get_logger(__name__)
-_tenacity_logger = logging.getLogger(__name__)
 
-MODEL_NAME = os.getenv("MODEL_NAME", "facebook/bart-large-mnli")
 MODEL_VERSION = os.getenv("MODEL_VERSION", "1.0.0")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -32,28 +37,30 @@ if not DATABASE_URL:
         )
     DATABASE_URL = f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}"
 
-# Medical condition labels for zero-shot classification
-CONDITION_LABELS = [
-    "migraine",
-    "bacterial meningitis",
-    "common cold",
-    "influenza",
-    "COVID-19",
-    "hypertension",
-    "appendicitis",
-    "urinary tract infection",
-    "anxiety disorder",
-    "pneumonia",
-]
-
-_classifier = None
 _db_pool: Optional[asyncpg.Pool] = None
 
 FALLBACK_MESSAGE = "Không thể phân loại, vui lòng tham khảo bác sĩ"
 
+# ── OTel custom metrics ──────────────────────────────────────────────────────
+# Instruments are created at module level after setup_telemetry() has run
+# (setup_telemetry is called at module level in main.py, before any import of
+# this module triggers these create_* calls).
+_meter = otel_metrics.get_meter("medical-ai-service")
+_predictions_counter = _meter.create_counter(
+    "medical_ai_predictions_total",
+    description="Total classification requests, labelled by provider.",
+)
+_fallback_counter = _meter.create_counter(
+    "medical_ai_fallback_total",
+    description="Total responses where all providers failed (is_fallback=True).",
+)
+_inference_histogram = _meter.create_histogram(
+    "medical_ai_inference_duration_ms",
+    description="End-to-end inference latency across the provider fallback chain, in ms.",
+    unit="ms",
+)
+
 # ── Langfuse client (optional) ───────────────────────────────────────────────
-# Tracing is silently disabled when LANGFUSE_PUBLIC_KEY is not set so the
-# service works normally without a Langfuse instance.
 _langfuse = None
 if os.getenv("LANGFUSE_PUBLIC_KEY"):
     try:
@@ -61,32 +68,6 @@ if os.getenv("LANGFUSE_PUBLIC_KEY"):
         _langfuse = Langfuse()
     except Exception as _lf_err:
         logger.warning("langfuse_init_failed", error=str(_lf_err))
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
-    reraise=True,
-    before_sleep=before_sleep_log(_tenacity_logger, logging.WARNING),
-)
-def _run_inference(clf, symptoms: str) -> dict:
-    """Synchronous inference call; tenacity retries up to 3 times with exponential backoff."""
-    return clf(symptoms, CONDITION_LABELS, multi_label=False)
-
-
-def get_classifier():
-    """Lazy-load classifier; cached after first call."""
-    global _classifier
-    if _classifier is None:
-        try:
-            from transformers import pipeline
-            logger.info("model_loading", model=MODEL_NAME)
-            _classifier = pipeline("zero-shot-classification", model=MODEL_NAME)
-            logger.info("model_loaded", model=MODEL_NAME)
-        except Exception as e:
-            logger.error("model_load_failed", model=MODEL_NAME, error=str(e))
-            _classifier = None
-    return _classifier
 
 
 async def get_db_pool() -> asyncpg.Pool:
@@ -97,48 +78,49 @@ async def get_db_pool() -> asyncpg.Pool:
 
 
 async def init_db():
-    """Create predictions table if not exists."""
+    """Create predictions table if not exists and apply migration guards."""
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
-                id          SERIAL PRIMARY KEY,
-                patient_id  VARCHAR(64) NOT NULL,
-                symptoms    TEXT NOT NULL,
+                id            SERIAL PRIMARY KEY,
+                patient_id    VARCHAR(64) NOT NULL,
+                symptoms      TEXT NOT NULL,
                 top_condition VARCHAR(128),
-                confidence  FLOAT,
+                confidence    FLOAT,
                 all_predictions JSONB,
                 model_version VARCHAR(32),
-                age         SMALLINT,
-                notes       TEXT,
-                created_at  TIMESTAMPTZ DEFAULT NOW()
+                age           SMALLINT,
+                notes         TEXT,
+                created_at    TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        # Migration guard: add columns to pre-existing tables that lack them.
         await conn.execute("""
             ALTER TABLE predictions
                 ADD COLUMN IF NOT EXISTS age         SMALLINT,
                 ADD COLUMN IF NOT EXISTS notes       TEXT,
-                ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN DEFAULT FALSE
+                ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS provider    VARCHAR(32) DEFAULT 'huggingface'
         """)
     logger.info("db_initialized")
 
 
-async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, notes: str | None) -> dict:
-    """Run zero-shot classification and persist result.
+async def classify_symptoms(
+    patient_id: str,
+    symptoms: str,
+    age: int | None,
+    notes: str | None,
+) -> dict:
+    """Run classification via provider fallback chain and persist result.
 
-    Model errors are suppressed: if the classifier is unavailable or all
-    inference retries fail, the response includes ``is_fallback=True`` and a
-    human-readable ``fallback_message``, and the record is still persisted to
-    the database for audit purposes.
+    Model errors are suppressed: if all providers fail, is_fallback=True is
+    returned and a human-readable fallback_message is included.  The record is
+    still persisted to the database for audit purposes.
 
-    Database errors (``asyncpg.PostgresError``) propagate to the caller
-    unchanged — the caller is responsible for mapping them to an HTTP response.
+    Database errors (asyncpg.PostgresError) propagate to the caller unchanged.
     """
-    clf = get_classifier()
-    is_fallback = False
 
-    # ── Langfuse trace ───────────────────────────────────────────────────────
+    # ── Langfuse trace (outer wrapper, provider-agnostic) ────────────────────
     lf_trace = None
     lf_generation = None
     if _langfuse is not None:
@@ -147,57 +129,58 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
             user_id=patient_id,
             metadata={"age": age, "notes": notes},
         )
+        lf_generation = lf_trace.generation(
+            name="classify_with_fallback",
+            input=symptoms,
+        )
 
-    if clf is None:
-        logger.warning("classifier_unavailable", patient_id=patient_id)
-        is_fallback = True
-    else:
-        if lf_trace is not None:
-            lf_generation = lf_trace.generation(
-                name="zero-shot-classification",
-                model=MODEL_NAME,
-                model_parameters={"labels": CONDITION_LABELS},
-                input=symptoms,
-            )
-        try:
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, lambda: _run_inference(clf, symptoms))
-        except Exception as exc:
-            logger.error("inference_failed", patient_id=patient_id, error=str(exc))
-            is_fallback = True
-            if lf_generation is not None:
-                lf_generation.end(level="ERROR", status_message=str(exc))
+    # ── Inference via provider fallback chain ────────────────────────────────
+    t0 = time.perf_counter()
+    result_data, is_fallback = await classify_with_fallback(symptoms)
+    duration_ms = (time.perf_counter() - t0) * 1000
 
+    provider = result_data.get("provider", "none")
+    top_condition = result_data["top_condition"]
+    confidence = result_data["confidence"]
+    all_preds = result_data["all_predictions"]
+
+    # ── OTel metrics ─────────────────────────────────────────────────────────
+    _predictions_counter.add(1, {"provider": provider})
     if is_fallback:
-        top_condition = "unclassifiable"
-        confidence = 0.0
-        all_preds: list[dict] = []
-    else:
-        all_preds = [
-            {"label": lbl, "score": round(score, 4)}
-            for lbl, score in zip(result["labels"], result["scores"])
-        ]
-        top_condition = all_preds[0]["label"]
-        confidence = all_preds[0]["score"]
+        _fallback_counter.add(1)
+    _inference_histogram.record(duration_ms, {"provider": provider})
 
-        if lf_generation is not None:
+    # ── Langfuse generation end ──────────────────────────────────────────────
+    if lf_generation is not None:
+        if is_fallback:
+            lf_generation.end(level="ERROR", status_message="all_providers_failed")
+        else:
             lf_generation.end(
                 output=top_condition,
-                usage={"input": len(symptoms.split()), "total": len(symptoms.split())},
+                metadata={"provider": provider, "confidence": round(confidence, 4)},
             )
 
+    # ── Persist to DB ────────────────────────────────────────────────────────
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO predictions
                 (patient_id, symptoms, top_condition, confidence, all_predictions,
-                 model_version, age, notes, is_fallback)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+                 model_version, age, notes, is_fallback, provider)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
             RETURNING id, created_at
             """,
-            patient_id, symptoms, top_condition, confidence,
-            json.dumps(all_preds), MODEL_VERSION, age, notes, is_fallback,
+            patient_id,
+            symptoms,
+            top_condition,
+            confidence,
+            json.dumps(all_preds),
+            MODEL_VERSION,
+            age,
+            notes,
+            is_fallback,
+            provider,
         )
 
     logger.info(
@@ -206,7 +189,9 @@ async def classify_symptoms(patient_id: str, symptoms: str, age: int | None, not
         record_id=row["id"],
         top_condition=top_condition,
         confidence=round(confidence, 4),
+        provider=provider,
         is_fallback=is_fallback,
+        duration_ms=round(duration_ms, 1),
     )
 
     response: dict = {

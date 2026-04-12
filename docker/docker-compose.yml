@@ -22,6 +22,17 @@ services:
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-medical-ai-service}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment=dev}
+      # Optional LLM fallback providers — leave blank to skip
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Security
+      API_KEYS: ${API_KEYS:-}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-dev-secret-change-in-production}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
     depends_on:
       db:
         condition: service_healthy
@@ -84,15 +95,32 @@ services:
     container_name: medical_prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"   # allows POST /-/reload to reload rules without restart
     ports:
       - "9090:9090"
     depends_on:
       - api
+    restart: unless-stopped
+    networks:
+      - medical_net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: medical_alertmanager
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+    depends_on:
+      - prometheus
     restart: unless-stopped
     networks:
       - medical_net
