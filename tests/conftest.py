@@ -11,7 +11,7 @@ Why stubs instead of skipping the imports?
   ModuleNotFoundError if the package is absent — even when no test ever calls
   real asyncpg code.  Every test that would reach actual asyncpg / transformers
   logic already replaces the relevant function (init_db, get_db_pool,
-  classify_symptoms, get_classifier …) with an AsyncMock or MagicMock *before*
+  classify_symptoms, classify_with_fallback …) with an AsyncMock or MagicMock *before*
   that code path executes.  The stubs below satisfy the import statements so
   the module loads cleanly; they are placeholder objects, never actually called.
 """

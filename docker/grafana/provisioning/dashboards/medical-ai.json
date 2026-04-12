@@ -48,7 +48,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(http_requests_total{status_code=~\"5..\"}[5m]) / rate(http_requests_total[5m])",
+          "expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))",
           "legendFormat": "Error Rate",
           "refId": "A"
         }
@@ -70,7 +70,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(medical_ai_fallback_total[5m]) / rate(medical_ai_predictions_total[5m])",
+          "expr": "rate(medical_ai_fallback_total[5m]) / sum(rate(medical_ai_predictions_total[5m]))",
           "legendFormat": "Fallback Rate",
           "refId": "A"
         }
@@ -144,7 +144,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, rate(medical_ai_inference_duration_ms_bucket[5m])) by (provider)",
+          "expr": "histogram_quantile(0.95, sum(rate(medical_ai_inference_duration_ms_bucket[5m])) by (le, provider))",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
@@ -164,7 +164,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(medical_ai_predictions_total[1m]) by (provider)",
+          "expr": "sum(rate(medical_ai_predictions_total[1m])) by (provider)",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }

@@ -136,7 +136,6 @@ Prometheus-format metrics are exposed at `GET /metrics`. Key metrics:
 The `docker-compose.yml` includes a pre-configured **Tempo + Prometheus + Grafana** stack for local development. After `docker compose up`:
 
 | UI | URL | Credentials |
-| UI | URL | Credentials |
 |----|-----|-------------|
 | Tempo | http://localhost:3200 | — |
 | Prometheus | http://localhost:9090 | — |

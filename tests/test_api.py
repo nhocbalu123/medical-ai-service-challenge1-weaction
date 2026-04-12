@@ -46,11 +46,11 @@ MOCK_PREDICTION = {
 def client():
     """
     Build a TestClient that suppresses real DB and model I/O during the
-    lifespan startup (init_db + get_classifier warm-up).
+    lifespan startup (init_db + HuggingFace warm-up).
     """
     with (
         patch("app.services.core.init_db", new_callable=AsyncMock),
-        patch("app.services.core.get_classifier", return_value=None),
+        patch("app.main._hf_provider._load", return_value=MagicMock()),
     ):
         from app.main import app
 
@@ -64,18 +64,17 @@ def client():
 
 
 def test_health_returns_200(client: TestClient):
-    with (
-        patch("app.services.core.check_db_health", new_callable=AsyncMock, return_value=True),
-        patch("app.services.core.get_classifier", return_value=MagicMock()),
-    ):
+    from app.services import core
+
+    with patch("app.services.core.check_db_health", new_callable=AsyncMock, return_value=True):
         response = client.get("/health")
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
     assert body["db"] == "healthy"
-    assert body["model"] == "loaded"
-    assert "version" in body
+    assert body["model"] == core.MODEL_NAME
+    assert body["version"] == core.MODEL_VERSION
 
 
 def test_health_degraded_when_db_unreachable(client: TestClient):
@@ -261,8 +260,8 @@ def test_predict_normal_result_has_no_fallback_flag(client: TestClient):
     assert body.get("fallback_message") is None
 
 
-def test_classify_symptoms_returns_fallback_when_model_none():
-    """Unit test: classify_symptoms returns is_fallback=True when classifier is None."""
+def test_classify_symptoms_returns_fallback_when_all_providers_fail():
+    """Unit test: classify_symptoms returns is_fallback=True when provider chain falls back."""
     import asyncio
     from app.services import core
 
@@ -272,9 +271,20 @@ def test_classify_symptoms_returns_fallback_when_model_none():
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
 
+    fallback_result = {
+        "top_condition": "unclassifiable",
+        "confidence": 0.0,
+        "all_predictions": [],
+        "provider": "none",
+    }
+
     async def _run():
         with (
-            patch("app.services.core.get_classifier", return_value=None),
+            patch(
+                "app.services.core.classify_with_fallback",
+                new_callable=AsyncMock,
+                return_value=(fallback_result, True),
+            ),
             patch("app.services.core.get_db_pool", new_callable=AsyncMock, return_value=mock_pool),
         ):
             return await core.classify_symptoms(
@@ -290,12 +300,10 @@ def test_classify_symptoms_returns_fallback_when_model_none():
     assert result["fallback_message"] == core.FALLBACK_MESSAGE
 
 
-def test_classify_symptoms_returns_fallback_when_inference_fails():
-    """Unit test: classify_symptoms returns is_fallback=True when inference raises after retries."""
+def test_classify_symptoms_returns_non_fallback_result_when_provider_succeeds():
+    """Unit test: classify_symptoms returns is_fallback=False when provider chain succeeds."""
     import asyncio
     from app.services import core
-
-    mock_clf = MagicMock(side_effect=RuntimeError("GPU OOM"))
 
     mock_pool = MagicMock()
     mock_conn = MagicMock()
@@ -303,10 +311,20 @@ def test_classify_symptoms_returns_fallback_when_inference_fails():
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
 
+    provider_result = {
+        "top_condition": "influenza",
+        "confidence": 0.88,
+        "all_predictions": [{"label": "influenza", "score": 0.88}],
+        "provider": "huggingface",
+    }
+
     async def _run():
         with (
-            patch("app.services.core.get_classifier", return_value=mock_clf),
-            patch("app.services.core._run_inference", side_effect=RuntimeError("GPU OOM")),
+            patch(
+                "app.services.core.classify_with_fallback",
+                new_callable=AsyncMock,
+                return_value=(provider_result, False),
+            ),
             patch("app.services.core.get_db_pool", new_callable=AsyncMock, return_value=mock_pool),
         ):
             return await core.classify_symptoms(
@@ -315,9 +333,11 @@ def test_classify_symptoms_returns_fallback_when_inference_fails():
 
     result = asyncio.run(_run())
 
-    assert result["is_fallback"] is True
-    assert result["top_condition"] == "unclassifiable"
-    assert result["fallback_message"] == core.FALLBACK_MESSAGE
+    assert result["is_fallback"] is False
+    assert result["top_condition"] == "influenza"
+    assert result["confidence"] == 0.88
+    assert result["all_predictions"] == [{"label": "influenza", "score": 0.88}]
+    assert "fallback_message" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -439,21 +459,21 @@ def test_predict_rejects_notes_too_long(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
-# GET /health — model=unavailable branch  (MEDIUM gap)
+# GET /health — metadata remains stable  (MEDIUM gap)
 # ---------------------------------------------------------------------------
 
 
-def test_health_model_unavailable(client: TestClient):
-    """When get_classifier returns None the health response must report model=unavailable."""
-    with (
-        patch("app.services.core.check_db_health", new_callable=AsyncMock, return_value=True),
-        patch("app.services.core.get_classifier", return_value=None),
-    ):
+def test_health_reports_model_metadata_when_db_healthy(client: TestClient):
+    """Health endpoint reports configured model metadata."""
+    from app.services import core
+
+    with patch("app.services.core.check_db_health", new_callable=AsyncMock, return_value=True):
         response = client.get("/health")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["model"] == "unavailable"
+    assert body["model"] == core.MODEL_NAME
+    assert body["version"] == core.MODEL_VERSION
     assert body["status"] == "ok"
 
 
@@ -507,24 +527,3 @@ def test_check_db_health_returns_false_on_exception():
 
     assert asyncio.run(_run()) is False
 
-
-# ---------------------------------------------------------------------------
-# _run_inference — retry behaviour  (LOW gap)
-# ---------------------------------------------------------------------------
-
-
-def test_run_inference_retries_three_times_before_raising():
-    """tenacity must call the classifier exactly 3 times before re-raising."""
-    from app.services.core import _run_inference
-
-    failing_clf = MagicMock(side_effect=RuntimeError("GPU OOM"))
-
-    # Suppress the exponential back-off so the test does not sleep.
-    _run_inference.retry.sleep = lambda _: None  # type: ignore[attr-defined]
-    try:
-        with pytest.raises(RuntimeError, match="GPU OOM"):
-            _run_inference(failing_clf, "Patient has persistent headache and fever for 3 days")
-        assert failing_clf.call_count == 3
-    finally:
-        import time
-        _run_inference.retry.sleep = time.sleep  # type: ignore[attr-defined]

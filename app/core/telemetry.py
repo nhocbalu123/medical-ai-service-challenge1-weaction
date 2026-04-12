@@ -1,8 +1,9 @@
 """
 Central OpenTelemetry wiring.
 
-Call setup_telemetry() once at application startup (inside the lifespan
-context manager) before the FastAPI app begins accepting requests.
+Call setup_telemetry() once at module import time, before the FastAPI app is
+created, so middleware and instrumentation are registered early enough to
+observe startup and requests. Do not move this call into the lifespan context.
 
 Trace pipeline:  FastAPI → OTel SDK → OTLP/HTTP → Grafana Tempo
 Metric pipeline: OTel SDK → PrometheusMetricReader → prometheus_client

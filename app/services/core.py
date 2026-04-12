@@ -218,13 +218,18 @@ async def get_prediction_by_id(record_id: int) -> dict | None:
     if row is None:
         return None
     is_fallback = bool(row["is_fallback"]) if row["is_fallback"] is not None else False
+    all_predictions = row["all_predictions"]
+    if isinstance(all_predictions, str):
+        all_predictions = json.loads(all_predictions)
+    elif all_predictions is None:
+        all_predictions = []
     record: dict = {
         "record_id": row["id"],
         "patient_id": row["patient_id"],
         "symptoms": row["symptoms"],
         "top_condition": row["top_condition"],
         "confidence": row["confidence"],
-        "all_predictions": json.loads(row["all_predictions"]),
+        "all_predictions": all_predictions,
         "model_version": row["model_version"],
         "created_at": row["created_at"],
         "is_fallback": is_fallback,

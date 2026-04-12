@@ -6,8 +6,8 @@ groups:
       # API 5xx error rate > 5% over a 5-minute window
       - alert: HighErrorRate
         expr: |
-          rate(http_requests_total{status_code=~"5.."}[5m])
-          / rate(http_requests_total[5m]) > 0.05
+          sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m])) > 0.05
         for: 2m
         labels:
           severity: critical
@@ -37,7 +37,7 @@ groups:
       - alert: HighFallbackRate
         expr: |
           rate(medical_ai_fallback_total[10m])
-          / rate(medical_ai_predictions_total[10m]) > 0.20
+          / sum(rate(medical_ai_predictions_total[10m])) > 0.20
         for: 5m
         labels:
           severity: critical

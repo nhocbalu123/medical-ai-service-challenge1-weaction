@@ -93,7 +93,7 @@ python -m pytest -k test_predict_returns_503_on_db_error -v
 | `POST /predict` errors | 503 on asyncpg DB error, 503 on `OSError` |
 | `GET /predict/{id}` | found, not found (404), non-integer ID (422), record with `is_fallback=True` |
 | `GET /metrics` | endpoint reachable, Prometheus counter present |
-| Service unit | `classify_symptoms` fallback paths, `check_db_health` success/failure, `_run_inference` retry count |
+| Service unit | `classify_symptoms` fallback/non-fallback persistence paths, `check_db_health` success/failure |
 
 ### Why heavy dependencies are not installed
 
@@ -364,7 +364,7 @@ To explore distributed traces:
 
 ### Langfuse LLM Traces
 
-Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` in `.env`, then restart the service. Each call to `POST /predict` creates a trace named `classify_symptoms` with a generation span named `zero-shot-classification`.
+Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` in `.env`, then restart the service. Each call to `POST /predict` creates a trace named `classify_symptoms` with a generation span named `classify_with_fallback`.
 
 - Cloud UI: https://cloud.langfuse.com
 - Self-hosted: set `LANGFUSE_HOST` to your instance URL
