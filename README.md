@@ -73,9 +73,12 @@ medical-ai-service/
 │   └── services/core.py           # HuggingFace classifier + asyncpg DB + Langfuse tracing
 ├── docker/
 │   ├── Dockerfile                 # Multi-stage build (python:3.11-slim)
-│   ├── docker-compose.yml         # api + db + tempo + prometheus + grafana
+│   ├── docker-compose.yml         # api + db + tempo + prometheus + grafana + alertmanager
 │   ├── tempo.yaml                 # Grafana Tempo config (OTLP receiver, local storage)
-│   ├── prometheus.yml             # Prometheus scrape config
+│   ├── prometheus.yml             # Prometheus scrape config + alert rules loading
+│   ├── alertmanager.yml.example   # Alertmanager config template (copy to alertmanager.yml)
+│   ├── prometheus/
+│   │   └── alerts.yml             # Prometheus alert rules (5 rules)
 │   └── grafana/provisioning/      # Auto-provisions Prometheus + Tempo datasources in Grafana
 ├── docs/
 │   ├── RUNBOOK.md                 # Detailed ops guide + troubleshooting
@@ -151,6 +154,31 @@ To enable:
 1. Sign up at [cloud.langfuse.com](https://cloud.langfuse.com) (free tier available) or self-host Langfuse.
 2. Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and optionally `LANGFUSE_HOST` in your `.env`.
 3. Restart the service — traces appear in the Langfuse dashboard immediately.
+
+### Alerting (Prometheus & Alertmanager)
+
+The service includes **Prometheus alert rules** and **Alertmanager** for proactive monitoring and incident notification.
+
+**Alert rules** (`docker/prometheus/alerts.yml`):
+
+| Alert | Severity | Condition | Impact |
+|-------|----------|-----------|--------|
+| `HighErrorRate` | critical | 5xx error rate > 5% over 5 minutes | Service degradation detected |
+| `SlowResponses` | warning | P95 response latency > 10 seconds | Performance degradation |
+| `HighFallbackRate` | critical | Fallback predictions > 20% over 10 minutes | Model or inference issues |
+| `HighMemoryUsage` | warning | Process RSS > 3.4 GB | Potential OOM risk |
+| `HighCPUUsage` | warning | Process CPU > 90% | Resource exhaustion |
+
+**Setup:**
+
+1. Copy the Alertmanager config: `cp docker/alertmanager.yml.example docker/alertmanager.yml`
+2. Edit `docker/alertmanager.yml` and replace `YOUR_SLACK_WEBHOOK_URL` with your actual Slack webhook.
+3. Restart: `docker compose -f docker/docker-compose.yml up -d`
+4. Verify Alertmanager is running at `http://localhost:9093`
+
+When alerts fire, **critical** alerts route to `#alerts-medical-ai-critical` and **warning** alerts to `#alerts-medical-ai`. Critical alerts suppress matching warnings to reduce noise.
+
+For full setup and troubleshooting details, see [`docs/RUNBOOK.md`](docs/RUNBOOK.md) (Section 10. Alerting Setup).
 
 ---
 
