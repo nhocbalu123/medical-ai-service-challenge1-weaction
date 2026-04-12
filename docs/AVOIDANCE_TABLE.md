@@ -35,6 +35,7 @@ if is_fallback:
         "confidence": 0.0,
         "all_predictions": [],
         "is_fallback": True,
+        "provider": "none",
     }
 ```
 
@@ -97,7 +98,7 @@ async def classify(self, symptoms: str) -> dict:
     ...
 ```
 
-**Fix — Layer 2, provider-chain fallback response:** `classify_symptoms` now delegates to `classify_with_fallback()` (HuggingFace → OpenAI → Gemini). If every available provider fails (or circuit breakers are open), it returns a safe default with `is_fallback=True`, `top_condition="unclassifiable"`, `confidence=0.0`, and a Vietnamese advisory message. The router still returns `201` for this model-failure mode.
+**Fix — Layer 2, provider-chain fallback response:** `classify_symptoms` now delegates to `classify_with_fallback()` (HuggingFace → OpenAI → Gemini). If every available provider fails (or circuit breakers are open), it returns a safe default with `is_fallback=True`, `provider="none"`, `top_condition="unclassifiable"`, `confidence=0.0`, and a Vietnamese advisory message. The router still returns `201` for this model-failure mode.
 
 **Fix — Layer 3, audit persistence:** Fallback records are stored in PostgreSQL with an `is_fallback BOOLEAN` column so the care team can identify unclassified requests and data analysts can exclude them from model metrics.
 
@@ -147,7 +148,7 @@ except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
 
 **Problem:** `FastAPIInstrumentor.instrument_app(app)` (and `setup_telemetry()`) were called inside the FastAPI `lifespan` async context manager. Starlette compiles the middleware stack **before** the lifespan handler runs — it needs the compiled stack to process the `lifespan` ASGI scope itself. Any middleware added during lifespan startup is inserted into `user_middleware` but never enters the already-frozen compiled stack. The `OpenTelemetryMiddleware` that creates per-request spans was never part of the live request pipeline. Every request returned `NonRecordingSpan` (OTel no-op), the `X-Trace-ID` header was never set, and no traces reached Grafana Tempo.
 
-**Fix:** Moved `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` to **module level** — executed at import time, after `app = FastAPI(...)` but before any ASGI call arrives. The `lifespan` retains only runtime I/O startup work (`init_db`, model warm-up).
+**Fix:** Moved `configure_logging()` and `setup_telemetry()` to run **before** `app = FastAPI(...)`, and only `FastAPIInstrumentor.instrument_app(app)` runs after the app is created but before any ASGI call arrives. The `lifespan` retains only runtime I/O startup work (`init_db`, model warm-up).
 
 ```python
 # before — too late; middleware stack already compiled when lifespan runs
@@ -217,7 +218,7 @@ storage:
 
 **Problem:** After migrating from `prometheus-fastapi-instrumentator` to OpenTelemetry (4.0.0), querying `http_requests_total` or `rate(http_requests_total[1m])` in Prometheus returned no results — no error, just silence. The CHANGELOG 4.0.0 breaking changes noted that "HTTP metric names changed to OTel semantic convention names", but the PromQL examples in the RUNBOOK still referenced `http_requests_total`, making the omission non-obvious.
 
-The root cause: `opentelemetry-instrumentation-fastapi` auto-instruments the app with a histogram named `http.server.request.duration` (OTel semantic conventions), which Prometheus exposes as `http_server_request_duration_seconds_*`. It does **not** create any metric named `http_requests_total`. Prometheus silently returns no data for a metric that doesn't exist — it does not warn that the metric name is unknown.
+The root cause: `opentelemetry-instrumentation-fastapi` auto-instruments the app with a histogram named `http.server.request.duration` (OTel semantic conventions), which Prometheus exposes as `http_server_duration_milliseconds_bucket`. It does **not** create any metric named `http_requests_total`. Prometheus silently returns no data for a metric that doesn't exist — it does not warn that the metric name is unknown.
 
 An additional bug was present in the RUNBOOK PromQL example for error rate:
 ```promql

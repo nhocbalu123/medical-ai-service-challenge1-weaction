@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [4.1.0] - 2026-04-12
+
 ### Added
 
 - **Multi-provider LLM fallback chain (`app/services/providers.py`).** Classification now tries providers in order: HuggingFace (local, retry 3×) → OpenAI (retry 2×) → Gemini (retry 2×) → hardcoded `"unclassifiable"` fallback. Each provider has an `aiobreaker` circuit breaker (fail\_max=3, 60 s reset) to skip failing providers immediately after repeated errors. Providers without credentials (`OPENAI_API_KEY`, `GEMINI_API_KEY`) are automatically skipped.
@@ -43,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docker/alertmanager.yml.example`** — template with placeholder Slack webhook URL. The real `docker/alertmanager.yml` is listed in `.gitignore` to prevent committing secrets.
 
 ### Changed
+
+- **Documentation**: Updated `README.md`, `docs/RUNBOOK.md`, and `docs/AVOIDANCE_TABLE.md` to accurately reflect the multi-provider architecture, fix metric names, correct cross-references, and apply documentation best practices (added TOCs, Prerequisites, and removed redundancies).
 
 - **`app/services/core.py`** — inference path replaced with `classify_with_fallback()`; Langfuse trace now wraps the entire fallback chain (one trace per request regardless of provider used); `provider` column added to `predictions` table (migration guard with `ADD COLUMN IF NOT EXISTS`); `MODEL_VERSION` persisted per-row.
 
@@ -296,7 +302,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/nhocbalu123/medical-ai-service/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/nhocbalu123/medical-ai-service/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v4.0.1...v4.1.0
+[4.0.1]: https://github.com/nhocbalu123/medical-ai-service/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/nhocbalu123/medical-ai-service/compare/v2.1.0...v2.2.0

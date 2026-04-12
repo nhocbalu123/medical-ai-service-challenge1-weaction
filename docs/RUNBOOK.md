@@ -6,6 +6,21 @@ This repository is a standalone backend service, built as a monolith, organized 
 
 ---
 
+## 📑 Table of Contents
+
+- [1. Running the Service](#1-running-the-service)
+- [2. Running the Test Suite](#2-running-the-test-suite)
+- [3. Testing the Endpoints (curl)](#3-testing-the-endpoints-curl)
+- [4. DB Schema](#4-db-schema)
+- [5. Fallback Behaviour](#5-fallback-behaviour)
+- [6. Observability](#6-observability)
+- [7. Troubleshooting](#7-troubleshooting)
+- [8. Authentication Guide](#8-authentication-guide)
+- [9. Multi-Provider Fallback](#9-multi-provider-fallback)
+- [10. Alerting Setup](#10-alerting-setup)
+
+---
+
 ## 1. Running the Service
 
 ### Prerequisites
@@ -62,13 +77,13 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-Expected output (all 27 tests should pass, coverage ≥ 70 %):
+Expected output (all 29 tests should pass, coverage ≥ 70 %):
 
 ```
 tests/test_api.py ...........................          [100%]
 TOTAL    291    57    80%
 Required test coverage of 70% reached. Total coverage: 80.41%
-========================== 27 passed in Xs ===========================
+========================== 29 passed in Xs ===========================
 ```
 
 ### Run without coverage (faster during development)
@@ -108,6 +123,23 @@ python -m pytest -k test_predict_returns_503_on_db_error -v
 ```bash
 curl http://localhost:8000/health
 # {"status":"ok","db":"healthy","model":"facebook/bart-large-mnli","version":"1.0.0"}
+```
+
+### POST /auth/token — obtain a JWT
+
+```bash
+curl -X POST http://localhost:8000/auth/token \
+  -d "username=admin&password=changeme" \
+  -H "Content-Type: application/x-www-form-urlencoded"
+```
+
+Response:
+
+```json
+{
+  "access_token": "eyJhbGci...",
+  "token_type": "bearer"
+}
 ```
 
 ### POST /predict — valid input
@@ -151,20 +183,7 @@ Response:
 
 ### POST /predict — fallback response (all providers failed)
 
-When the model is unavailable the API still returns `201`. Check `is_fallback`:
-
-```bash
-# Example response when all available providers fail:
-# {
-#   "record_id": 7,
-#   "patient_id": "P-042",
-#   "top_condition": "unclassifiable",
-#   "confidence": 0.0,
-#   "all_predictions": [],
-#   "is_fallback": true,
-#   "fallback_message": "Không thể phân loại, vui lòng tham khảo bác sĩ"
-# }
-```
+When the model is unavailable the API still returns `201`. Check `is_fallback`. See [Section 5. Fallback Behaviour](#5-fallback-behaviour) for the exact JSON payload.
 
 ### POST /predict — bad input → 422
 
@@ -253,7 +272,7 @@ When the provider fallback chain cannot produce a classification (HuggingFace/Op
 
 - `GET /health` reports configured model metadata (`"model"` from `MODEL_NAME`, `"version"` from `MODEL_VERSION`); provider readiness is validated through logs/alerts rather than live probes.
 - Retry attempts are logged as `WARNING` before each sleep; the final failure is logged as `ERROR`.
-- All fallback records are saved to the DB with `is_fallback = TRUE`. Use the query in section 3 to audit them.
+- All fallback records are saved to the DB with `is_fallback = TRUE`. Use the query in section 4 to audit them.
 
 ### Database unavailable (→ 503)
 
@@ -386,7 +405,7 @@ Traces include: model name, input symptoms, top predicted condition, and approxi
 | `db` connection refused                                                     | Postgres not ready                                                                                                                       | `docker ps` → wait for `(healthy)` on `medical_db`                                                                                                                                                                                                                                                                                                              |
 | 422 on valid-looking input                                                  | `symptoms` < 10 chars                                                                                                                    | Minimum 10 characters required                                                                                                                                                                                                                                                                                                                                  |
 | Port 8000 already in use                                                    | Another service on port                                                                                                                  | `lsof -i :8000`, kill it, or change port in compose                                                                                                                                                                                                                                                                                                             |
-| `http_requests_total` query returns no results in Prometheus                | Metric was not defined — OTel FastAPI instrumentation generates histograms with OTel-convention names, not this counter                  | Fixed: `RequestLoggingMiddleware` now increments an explicit `prometheus_client.Counter`. Make at least one request to the API first; the counter appears only after the first increment. Use `{status_code=~"4..                                                                                                                                               | 5.."}`(not`status=~`) to filter by response code. |
+| `http_requests_total` query returns no results in Prometheus                | Metric was not defined — OTel FastAPI instrumentation generates histograms with OTel-convention names, not this counter                  | Fixed: `RequestLoggingMiddleware` now increments an explicit `prometheus_client.Counter`. Make at least one request to the API first; the counter appears only after the first increment. Use `{status_code=~"4..\|5.."}` (not `status=~`) to filter by response code. |
 | `GET /metrics` returns 404                                                  | `/metrics` route not mounted                                                                                                             | Verify `app.mount("/metrics", make_metrics_app())` is present in `main.py` and `setup_telemetry()` was called first                                                                                                                                                                                                                                             |
 | `X-Trace-ID` header missing from response                                   | OTel span not active — `instrument_app` called inside `lifespan` too late                                                                | `configure_logging()`, `setup_telemetry()`, and `FastAPIInstrumentor.instrument_app(app)` must be at **module level** in `main.py`, not inside `lifespan`. Starlette freezes the middleware stack before lifespan runs; anything added inside lifespan is never part of the live pipeline.                                                                      |
 | `medical_tempo` exits immediately on start                                  | Named volume owned by root; Tempo UID 10001 has no write access                                                                          | Volume must mount to `/var/tempo` (not `/tmp/tempo`) — the path the Tempo 2.5.0 image pre-owns as `tempo:tempo`. Confirm `docker-compose.yml` has `tempo_data:/var/tempo` and `tempo.yaml` uses `/var/tempo/blocks` and `/var/tempo/wal`. If you have an old `tempo_data` volume from a previous run, destroy it first: `docker volume rm <project>_tempo_data` |
