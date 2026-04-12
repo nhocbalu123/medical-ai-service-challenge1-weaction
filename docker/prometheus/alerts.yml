@@ -36,7 +36,7 @@ groups:
       # AI fallback rate > 20% — all providers are struggling
       - alert: HighFallbackRate
         expr: |
-          rate(medical_ai_fallback_total[10m])
+          sum(rate(medical_ai_fallback_total[10m]))
           / sum(rate(medical_ai_predictions_total[10m])) > 0.20
         for: 5m
         labels:

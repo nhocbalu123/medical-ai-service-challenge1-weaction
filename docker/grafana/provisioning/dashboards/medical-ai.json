@@ -70,7 +70,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(medical_ai_fallback_total[5m]) / sum(rate(medical_ai_predictions_total[5m]))",
+          "expr": "sum(rate(medical_ai_fallback_total[5m])) / sum(rate(medical_ai_predictions_total[5m]))",
           "legendFormat": "Fallback Rate",
           "refId": "A"
         }
